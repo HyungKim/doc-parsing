@@ -85,7 +85,8 @@ def run_pdf(path: Path, opts: Options) -> report.DocRun:
 
     def a_pymupdf():
         holder["doc"] = pdf_pymupdf.read(str(path))
-        run.befores.append(("before-mu", "Before · PyMuPDF 기본 추출", [p.before for p in holder["doc"].pages]))
+        run.add_before("before-mu", "Before · PyMuPDF 기본 추출", holder["doc"].pages,
+                       "PyMuPDF가 한 덩어리로 묶어 준 글")
         return apply_rules(holder["doc"], **opts.rules)
 
     run.methods.append(timed(MethodResult("A-mu", "A · 좌표 규칙 (PyMuPDF)"), a_pymupdf))
@@ -99,7 +100,8 @@ def run_pdf(path: Path, opts: Options) -> report.DocRun:
         def a_plumber():
             from docparse import pdf_plumber
             d = pdf_plumber.read(str(path))
-            run.befores.append(("before-pl", "Before · pdfplumber 기본 추출", [p.before for p in d.pages]))
+            run.add_before("before-pl", "Before · pdfplumber 기본 추출", d.pages,
+                           "한 줄 (pdfplumber는 줄 단위로만 줌)")
             return apply_rules(d, **opts.rules)
 
         run.methods.append(timed(MethodResult("A-pl", "A · 좌표 규칙 (pdfplumber)"), a_plumber))
@@ -122,7 +124,8 @@ def run_pptx(path: Path, opts: Options, include_hidden: bool) -> report.DocRun:
 
     def a_rules():
         holder["doc"] = pptx_reader.read(str(path), include_hidden=include_hidden)
-        run.befores.append(("before", "Before · python-pptx 기본 추출", [p.before for p in holder["doc"].pages]))
+        run.add_before("before", "Before · python-pptx 기본 추출", holder["doc"].pages,
+                       "도형(글상자) 하나")
         return apply_rules(holder["doc"], **opts.rules)
 
     run.methods.append(timed(MethodResult("A", "A · 좌표 규칙 (python-pptx)"), a_rules))

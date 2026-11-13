@@ -21,6 +21,14 @@ class DocRun:
     name: str
     kind: str                                   # pdf | pptx
     befores: List[Tuple[str, str, List[str]]] = field(default_factory=list)   # (key, 이름, 쪽별 텍스트)
+    before_units: Dict[str, List[List[str]]] = field(default_factory=dict)    # key → 쪽별 추출 단위 목록
+    before_unit_names: Dict[str, str] = field(default_factory=dict)           # key → 번호 하나가 뜻하는 것
+
+    def add_before(self, key: str, label: str, pages, unit_name: str) -> None:
+        """읽기 단계가 남긴 원문(쪽별 글과 추출 단위)을 Before 열로 등록한다."""
+        self.befores.append((key, label, [p.before for p in pages]))
+        self.before_units[key] = [list(p.before_units) for p in pages]
+        self.before_unit_names[key] = unit_name
     methods: List[MethodResult] = field(default_factory=list)
     images: List[Optional[bytes]] = field(default_factory=list)
     aspect: float = 4 / 3
@@ -85,6 +93,10 @@ ol.blocks li::marker{color:var(--box);font-weight:700;font-size:12px}
 .rm div{margin:1px 0}
 .rm s{text-decoration-thickness:1px}
 .raw span{display:block;min-height:1.2em}
+ol.units{margin:6px 0 0;padding-left:30px}
+ol.units li{margin:0 0 6px;padding-left:2px}
+ol.units li::marker{color:var(--mute);font-weight:700;font-size:12px}
+.unit{color:var(--mute);font-size:12px;margin:0 0 4px}
 .raw .x{background:var(--rm-bg);color:var(--rm-ink);text-decoration:line-through}
 .raw .t{background:var(--tt-bg);color:var(--tt-ink)}
 .d{background:var(--df-bg)}
@@ -175,18 +187,34 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
     return "".join(parts)
 
 
-def _before_col(key: str, label: str, text: str, removed_keys: set, title_key: str) -> str:
-    parts = ["<article class=\"col before\" data-col=\"%s\"><h3><span>%s</span></h3><div class=\"raw\">" % (esc(key), esc(label))]
-    for line in text.split("\n"):
-        k = compare_key(line)
-        cls = ""
-        if k and (k in removed_keys or any(
-                (k in r and len(k) >= 4) or (r in k and len(r) >= 0.6 * len(k)) for r in removed_keys if len(r) >= 4)):
-            cls = "x"
-        elif k and title_key and k == title_key:
-            cls = "t"
-        parts.append("<span class=\"%s\">%s</span>" % (cls, esc(line)) if cls else "<span>%s</span>" % esc(line))
-    parts.append("</div></article>")
+def _before_col(key: str, label: str, text: str, removed_keys: set, title_key: str,
+                units: Optional[List[str]] = None, unit_name: str = "") -> str:
+    """처리 전 원문. units가 있으면 라이브러리가 따로 꺼낸 단위마다 번호를 붙인다."""
+    parts = ["<article class=\"col before\" data-col=\"%s\"><h3><span>%s</span></h3>" % (esc(key), esc(label))]
+
+    def lines_html(chunk: str) -> str:
+        out = []
+        for line in chunk.split("\n"):
+            k = compare_key(line)
+            cls = ""
+            if k and (k in removed_keys or any(
+                    (k in r and len(k) >= 4) or (r in k and len(r) >= 0.6 * len(k)) for r in removed_keys if len(r) >= 4)):
+                cls = "x"
+            elif k and title_key and k == title_key:
+                cls = "t"
+            out.append("<span class=\"%s\">%s</span>" % (cls, esc(line)) if cls else "<span>%s</span>" % esc(line))
+        return "".join(out)
+
+    if units:
+        if unit_name:
+            parts.append("<div class=\"unit\">번호 하나 = %s · %d개</div>" % (esc(unit_name), len(units)))
+        parts.append("<ol class=\"raw units\">")
+        for unit in units:
+            parts.append("<li>%s</li>" % lines_html(unit))
+        parts.append("</ol>")
+    else:
+        parts.append("<div class=\"raw\">%s</div>" % lines_html(text))
+    parts.append("</article>")
     return "".join(parts)
 
 
@@ -224,6 +252,8 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
             sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
             "기준" if m is ref else ("%.1f%%" % (100 * sum(sims) / len(sims)) if sims else "-"), esc(m.note)))
     rows.append("</table></div>")
+    rows.append("<p class=\"legend\">Before 열의 번호는 라이브러리가 따로 꺼내 준 단위입니다. 같은 번호 안의 줄은 한 덩어리로 나온 것이고, "
+                "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서입니다.</p>")
     rows.append("<p class=\"legend\">Before 열 표시: <span style=\"background:var(--rm-bg);color:var(--rm-ink)\">빨강 취소선</span> = %s 방식이 제거한 문구, "
                 "<span style=\"background:var(--tt-bg);color:var(--tt-ink)\">초록</span> = %s 방식이 고른 제목. "
                 "일치율은 띄어쓰기와 줄바꿈을 무시하고 글자와 순서를 비교한 값입니다.</p>" % ((esc(ref.key),) * 2 if ref else ("-", "-")))
@@ -239,7 +269,9 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         ref_key = compare_key(page_text(rp))
         body.append("<section class=\"page\" id=\"p%d\" style=\"%s\"><h2>%d쪽</h2><div class=\"cols\">" % (i + 1, _page_style(run, i), i + 1))
         for key, label, texts in run.befores:
-            body.append(_before_col(key, label, texts[i] if i < len(texts) else "", removed_keys, title_key))
+            per_page = run.before_units.get(key, [])
+            body.append(_before_col(key, label, texts[i] if i < len(texts) else "", removed_keys, title_key,
+                                    per_page[i] if i < len(per_page) else None, run.before_unit_names.get(key, "")))
         for m in run.methods:
             p = _page(m, i)
             badge = ""
@@ -339,6 +371,7 @@ def write_json(run: DocRun, out_path: str) -> None:
     data = {
         "file": run.name, "kind": run.kind,
         "before": {k: texts for k, _, texts in run.befores},
+        "before_units": run.before_units,
         "methods": {
             m.key: {
                 "label": m.label, "seconds": round(m.seconds, 3), "error": m.error,

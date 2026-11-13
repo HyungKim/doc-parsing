@@ -61,6 +61,7 @@ class Page:
     height: float
     blocks: List[Block] = field(default_factory=list)
     before: str = ""              # 아무 처리 없이 읽은 텍스트
+    before_units: List[str] = field(default_factory=list)   # 같은 글을 라이브러리가 따로 꺼내 준 단위별로 나눈 것
     image: Optional[bytes] = None  # 페이지 이미지(JPEG), 있으면 리포트에 표시
     note: str = ""
 

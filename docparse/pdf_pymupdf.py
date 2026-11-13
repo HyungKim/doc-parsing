@@ -51,6 +51,11 @@ def read(path: str) -> Document:
         rect = page.rect
         out = Page(number=pno, width=rect.width, height=rect.height)
         out.before = page.get_text()
+        try:                                       # PyMuPDF가 한 덩어리로 묶어 준 단위(블록)
+            out.before_units = [b[4].rstrip("\n") for b in page.get_text("blocks")
+                                if (len(b) < 7 or b[6] == 0) and b[4].strip()]
+        except Exception:
+            out.before_units = []
 
         chars: List[Ch] = []
         raw = page.get_text("rawdict", flags=flags) if flags else page.get_text("rawdict")

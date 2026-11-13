@@ -48,6 +48,8 @@ def read(path: str) -> Document:
                 out.before = page.extract_text() or ""
             except Exception:
                 out.before = ""
+            # pdfplumber는 덩어리 정보 없이 줄 단위로만 준다
+            out.before_units = [line for line in out.before.split("\n") if line.strip()]
 
             chars: List[Ch] = []
             height = float(page.height)

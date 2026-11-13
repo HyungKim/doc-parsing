@@ -475,6 +475,7 @@ def read(path: str, include_hidden: bool = False) -> Document:
                 if t:
                     naive.append(t)
         page.before = "\n".join(naive)
+        page.before_units = list(naive)            # 도형(글상자) 하나가 한 단위
 
         reader = _SlideReader(prs, slide, width, height)
         reader.walk(slide.shapes)
