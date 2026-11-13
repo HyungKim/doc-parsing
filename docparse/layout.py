@@ -7,7 +7,15 @@ from typing import List
 from .model import Block, Line, Page
 from .textnorm import is_cjk
 
-Y_PREFERENCE = 1.5     # 가로로 자르는 여백을 세로로 자르는 여백보다 이만큼 우대한다
+# 읽는 순서를 정하는 기준값. 샘플로 정한 값이라, 실제 자료에서 안전한지는 tune.py로 확인한다.
+Y_PREFERENCE = 1.5     # 좌우로 자르려면 좌우 여백이 위아래 여백의 이 배수보다 넓어야 한다 (위아래 자르기 우대)
+Y_MIN_GAP = 0.5        # 위아래로 자르는 데 필요한 여백(pt). 겹치지만 않으면 자른다는 뜻이고, 좌표의 소수점 오차만 걸러 낸다
+X_MIN_GAP = 6.0        # 좌우로 자르는 데 필요한 여백(pt)의 최소 보장. 작은 글자와 상자 가장자리 오차 대비
+X_GAP_RATIO = 0.6      # 좌우로 자르는 데 필요한 여백 = 본문 글자 크기의 이 배수(띄어쓰기 두 칸쯤)와 X_MIN_GAP 중 큰 값
+
+
+def _min_x_gap(font_size: float) -> float:
+    return max(X_MIN_GAP, X_GAP_RATIO * font_size)
 
 
 # ---------------------------------------------------------------- 읽는 순서
@@ -60,8 +68,8 @@ def _grid_order(blocks: List[Block], font_size: float):
     2줄짜리 격자는 '머리글 + 내용' 카드가 옆으로 늘어선 것으로 보고 세로 묶음 단위로 읽는다.
     3줄 이상이고 칸의 글이 짧으면 표처럼 가로 줄 단위로 읽는다.
     """
-    rows = _bands(blocks, "y0", "y1", 0.5)
-    cols = _bands(blocks, "x0", "x1", max(6.0, 0.6 * font_size))
+    rows = _bands(blocks, "y0", "y1", Y_MIN_GAP)
+    cols = _bands(blocks, "x0", "x1", _min_x_gap(font_size))
     if len(rows) < 2 or len(cols) < 2:
         return None
     if any(len(row) < 2 for row in rows):
@@ -108,16 +116,18 @@ def xy_order(blocks: List[Block], font_size: float) -> List[Block]:
     """
     if len(blocks) <= 1:
         return list(blocks)
-    min_x = max(6.0, 0.6 * font_size)
+    min_x = _min_x_gap(font_size)
     gap_y, by_y, cut_y = _best_gap(blocks, "y0", "y1")
     gap_x, by_x, cut_x = _best_gap(blocks, "x0", "x1")
-    ok_y, ok_x = gap_y >= 0.5, gap_x >= min_x
+    # 여백이 0이면 자를 곳이 없다(한쪽 조각이 비어 끝나지 않는다). 기준값을 0으로 두어도 안전하도록 따로 확인한다.
+    ok_y = gap_y > 0 and gap_y >= Y_MIN_GAP
+    ok_x = gap_x > 0 and gap_x >= min_x
     if not ok_x and not ok_y:
         return _row_major(blocks)
 
     axis = "y" if ok_y else "x"
     if ok_x and ok_y:
-        rows_pure = all(len(r) == 1 or _pure(r, "y0", "y1") for r in _bands(blocks, "y0", "y1", 0.5))
+        rows_pure = all(len(r) == 1 or _pure(r, "y0", "y1") for r in _bands(blocks, "y0", "y1", Y_MIN_GAP))
         cols_pure = all(len(c) == 1 or _pure(c, "x0", "x1") for c in _bands(blocks, "x0", "x1", min_x))
         if rows_pure and cols_pure:
             grid = _grid_order(blocks, font_size)
