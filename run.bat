@@ -6,26 +6,43 @@ title PDF-PPTX 추출 비교 - 실행
 
 if not exist ".venv\Scripts\python.exe" goto :noinstall
 
-set "SRC=%~1"
-if defined SRC goto :havesrc
-echo 비교할 PDF, PPTX 파일이 들어 있는 폴더 경로를 입력하세요.
-echo 폴더를 이 창으로 끌어다 놓아도 됩니다.
-set /p "SRC=폴더 경로: "
-if not defined SRC goto :nosrc
-:havesrc
-set "SRC=%SRC:"=%"
-if "%SRC:~-1%"=="\" set "SRC=%SRC:~0,-1%"
-if not exist "%SRC%" goto :nosrc
+rem 끌어다 놓은 파일과 폴더를 모두 모은다. 여러 개를 한꺼번에 놓아도 된다.
+set "SRCS="
+set "COUNT=0"
+set "ONE="
+if "%~1"=="" goto :ask
 
+:collect
+if "%~1"=="" goto :run
+set "ONE=%~1"
+if "%ONE:~-1%"=="\" set "ONE=%ONE:~0,-1%"
+if not exist "%ONE%" goto :nosrc
+set SRCS=%SRCS% "%ONE%"
+set /a COUNT+=1
+shift
+goto :collect
+
+:ask
+echo 비교할 PDF, PPTX 파일이나 폴더의 경로를 입력하세요.
+echo 파일이나 폴더를 이 창으로 끌어다 놓아도 됩니다.
+set /p "ONE=경로: "
+if not defined ONE goto :noinput
+set "ONE=%ONE:"=%"
+if "%ONE:~-1%"=="\" set "ONE=%ONE:~0,-1%"
+if not exist "%ONE%" goto :nosrc
+set SRCS="%ONE%"
+set "COUNT=1"
+
+:run
 set "PYTHONUTF8=1"
 set "MODELS="
 if exist "docling_models\" set "MODELS=--docling-models docling_models"
 if exist "docling_models\" set "HF_HUB_OFFLINE=1"
 
 echo.
-echo 처리할 자료: %SRC%
+echo 처리할 자료: %COUNT%개 (파일 또는 폴더)
 echo.
-".venv\Scripts\python.exe" compare.py "%SRC%" -o out %MODELS%
+".venv\Scripts\python.exe" compare.py %SRCS% -o out %MODELS%
 if errorlevel 1 goto :runfail
 
 echo.
@@ -41,8 +58,14 @@ echo.
 pause
 exit /b 1
 
+:noinput
+echo [오류] 경로를 입력하지 않았습니다.
+echo.
+pause
+exit /b 1
+
 :nosrc
-echo [오류] 폴더를 찾지 못했습니다. 경로를 확인해 주세요.
+echo [오류] 찾지 못한 경로입니다: "%ONE%"
 echo.
 pause
 exit /b 1
