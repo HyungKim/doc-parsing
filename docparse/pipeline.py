@@ -1,0 +1,79 @@
+"""공통 후처리: 반복 문구 제거 → 문단 합치기 → 제목 추출 → 읽는 순서 정렬."""
+from __future__ import annotations
+
+from typing import List, Optional
+
+from .layout import analyze_wrap, estimate_right_edges, render_block, xy_order
+from .model import Block, Document, OutBlock, PageOut
+from .repeat import mark_repeats
+from .textnorm import one_line
+from .title import pick_title
+
+
+def body_font_size(doc: Document) -> float:
+    """문서 전체에서 글자 수 기준 가운데 크기 = 본문 글자 크기."""
+    weighted = []
+    for page in doc.pages:
+        for b in page.blocks:
+            if b.kind != "text" or b.role == "removed":
+                continue
+            for l in b.lines:
+                if l.size > 0 and not l.removed:
+                    weighted.append((l.size, len(l.text)))
+    if not weighted:
+        return 12.0
+    weighted.sort()
+    half = sum(w for _, w in weighted) / 2.0
+    acc = 0.0
+    for size, w in weighted:
+        acc += w
+        if acc >= half:
+            return size
+    return weighted[-1][0]
+
+
+def _norm_box(b: Block, page) -> tuple:
+    w, h = max(page.width, 1.0), max(page.height, 1.0)
+    clamp = lambda v: min(1.0, max(0.0, v))
+    return (clamp(b.x0 / w), clamp(b.y0 / h), clamp(b.x1 / w), clamp(b.y1 / h))
+
+
+def apply_rules(doc: Document, keep_order: bool = False, repeat_ratio: float = 0.6,
+                extra_keywords=None) -> List[PageOut]:
+    """keep_order=True 이면 블록 순서를 그대로 둔다(Docling 순서를 쓸 때)."""
+    body = body_font_size(doc)
+    mark_repeats(doc.pages, body, ratio=repeat_ratio, extra_keywords=extra_keywords)
+    ctx = analyze_wrap(doc.pages)
+    estimate_right_edges(doc.pages)
+    outs: List[PageOut] = []
+    for page in doc.pages:
+        out = PageOut(number=page.number)
+        live: List[Block] = []
+        seen = set()
+        for b in page.blocks:
+            for l in b.lines:
+                if l.removed and (l.text, l.removed) not in seen:
+                    seen.add((l.text, l.removed))
+                    out.removed.append((l.text, l.removed))
+            if b.role == "removed":
+                continue
+            b.text = render_block(b, ctx)
+            if b.text:
+                live.append(b)
+
+        title, reason = pick_title(live, page, body)
+        out.title_reason = reason
+        if title is not None:
+            out.title = one_line(title.text)
+            out.title_box = _norm_box(title, page)
+        rest = [b for b in live if b is not title]
+        if keep_order:
+            ordered = rest
+        else:
+            # 돌려 쓴 글(축 제목, 옆면 주석)은 본문 흐름에 끼지 않도록 맨 뒤로 보낸다
+            turned = [b for b in rest if b.lines and abs(b.lines[0].angle) >= 3.0]
+            flat = [b for b in rest if not (b.lines and abs(b.lines[0].angle) >= 3.0)]
+            ordered = xy_order(flat, body) + sorted(turned, key=lambda b: (b.y0, b.x0))
+        out.blocks = [OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind) for b in ordered]
+        outs.append(out)
+    return outs
