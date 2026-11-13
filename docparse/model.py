@@ -62,6 +62,7 @@ class Page:
     blocks: List[Block] = field(default_factory=list)
     before: str = ""              # 아무 처리 없이 읽은 텍스트
     before_units: List[str] = field(default_factory=list)   # 같은 글을 라이브러리가 따로 꺼내 준 단위별로 나눈 것
+    before_boxes: list = field(default_factory=list)        # 단위별 위치 (x0, y0, x1, y1), 쪽 크기 대비 0~1. 모르면 None
     image: Optional[bytes] = None  # 페이지 이미지(JPEG), 있으면 리포트에 표시
     note: str = ""
 

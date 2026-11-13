@@ -51,11 +51,14 @@ def read(path: str) -> Document:
         rect = page.rect
         out = Page(number=pno, width=rect.width, height=rect.height)
         out.before = page.get_text()
-        try:                                       # PyMuPDF가 한 덩어리로 묶어 준 단위(블록)
-            out.before_units = [b[4].rstrip("\n") for b in page.get_text("blocks")
-                                if (len(b) < 7 or b[6] == 0) and b[4].strip()]
+        try:                                       # PyMuPDF가 한 덩어리로 묶어 준 단위(블록)와 그 위치
+            pw, ph = max(rect.width, 1.0), max(rect.height, 1.0)
+            for b in page.get_text("blocks"):
+                if (len(b) < 7 or b[6] == 0) and b[4].strip():
+                    out.before_units.append(b[4].rstrip("\n"))
+                    out.before_boxes.append((b[0] / pw, b[1] / ph, b[2] / pw, b[3] / ph))
         except Exception:
-            out.before_units = []
+            out.before_units, out.before_boxes = [], []
 
         chars: List[Ch] = []
         raw = page.get_text("rawdict", flags=flags) if flags else page.get_text("rawdict")

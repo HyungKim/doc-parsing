@@ -23,11 +23,13 @@ class DocRun:
     befores: List[Tuple[str, str, List[str]]] = field(default_factory=list)   # (key, 이름, 쪽별 텍스트)
     before_units: Dict[str, List[List[str]]] = field(default_factory=dict)    # key → 쪽별 추출 단위 목록
     before_unit_names: Dict[str, str] = field(default_factory=dict)           # key → 번호 하나가 뜻하는 것
+    before_boxes: Dict[str, List[list]] = field(default_factory=dict)         # key → 쪽별 단위 위치 목록
 
     def add_before(self, key: str, label: str, pages, unit_name: str) -> None:
-        """읽기 단계가 남긴 원문(쪽별 글과 추출 단위)을 Before 열로 등록한다."""
+        """읽기 단계가 남긴 원문(쪽별 글, 추출 단위, 단위 위치)을 Before 열로 등록한다."""
         self.befores.append((key, label, [p.before for p in pages]))
         self.before_units[key] = [list(p.before_units) for p in pages]
+        self.before_boxes[key] = [list(p.before_boxes) for p in pages]
         self.before_unit_names[key] = unit_name
     methods: List[MethodResult] = field(default_factory=list)
     images: List[Optional[bytes]] = field(default_factory=list)
@@ -106,6 +108,8 @@ border:1px solid var(--line);border-radius:4px;margin-bottom:8px;overflow:hidden
 .map i b{position:absolute;left:-1px;top:-1px;background:#1f5fbf;color:#fff;font:700 10px/1.3 system-ui,sans-serif;padding:0 4px;border-radius:2px}
 .map i.t{border-color:#17803f;background:rgba(23,128,63,.10)}
 .map i.t b{background:#17803f}
+.col.before .map i{border-color:#6b7280;background:rgba(107,114,128,.10)}
+.col.before .map i b{background:#6b7280}
 body.nomap .map{display:none}
 .err{color:var(--rm-ink)}
 .legend{color:var(--mute);font-size:12px;margin:4px 0 0}
@@ -134,16 +138,28 @@ def _shell(title: str, sub: str, bar: str, body: str) -> str:
     ) % (esc(title), CSS, esc(title), sub, bar, body, JS)
 
 
+def _box_html(box, label: str, cls: str = "") -> str:
+    x0, y0, x1, y1 = box
+    return "<i%s style=\"left:%.2f%%;top:%.2f%%;width:%.2f%%;height:%.2f%%\"><b>%s</b></i>" % (
+        " class=\"%s\"" % cls if cls else "", x0 * 100, y0 * 100, max(x1 - x0, 0.01) * 100, max(y1 - y0, 0.01) * 100, label)
+
+
 def _map_html(p: PageOut) -> str:
     parts = ["<div class=\"map\">"]
     if p.title_box:
-        x0, y0, x1, y1 = p.title_box
-        parts.append("<i class=\"t\" style=\"left:%.2f%%;top:%.2f%%;width:%.2f%%;height:%.2f%%\"><b>제목</b></i>"
-                     % (x0 * 100, y0 * 100, max(x1 - x0, 0.01) * 100, max(y1 - y0, 0.01) * 100))
+        parts.append(_box_html(p.title_box, "제목", "t"))
     for n, b in enumerate(p.blocks, 1):
-        x0, y0, x1, y1 = b.box
-        parts.append("<i style=\"left:%.2f%%;top:%.2f%%;width:%.2f%%;height:%.2f%%\"><b>%d</b></i>"
-                     % (x0 * 100, y0 * 100, max(x1 - x0, 0.01) * 100, max(y1 - y0, 0.01) * 100, n))
+        parts.append(_box_html(b.box, str(n)))
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _unit_map_html(boxes: list) -> str:
+    """Before 열용 배치 그림: 라이브러리가 따로 꺼낸 단위의 위치와 번호."""
+    parts = ["<div class=\"map\">"]
+    for n, box in enumerate(boxes, 1):
+        if box:
+            parts.append(_box_html(box, str(n)))
     parts.append("</div>")
     return "".join(parts)
 
@@ -188,8 +204,9 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
 
 
 def _before_col(key: str, label: str, text: str, removed_keys: set, title_key: str,
-                units: Optional[List[str]] = None, unit_name: str = "") -> str:
-    """처리 전 원문. units가 있으면 라이브러리가 따로 꺼낸 단위마다 번호를 붙인다."""
+                units: Optional[List[str]] = None, unit_name: str = "", boxes: Optional[list] = None) -> str:
+    """처리 전 원문. units가 있으면 라이브러리가 따로 꺼낸 단위마다 번호를 붙이고,
+    boxes가 있으면 같은 번호를 쪽 그림 위에도 표시한다."""
     parts = ["<article class=\"col before\" data-col=\"%s\"><h3><span>%s</span></h3>" % (esc(key), esc(label))]
 
     def lines_html(chunk: str) -> str:
@@ -206,6 +223,8 @@ def _before_col(key: str, label: str, text: str, removed_keys: set, title_key: s
         return "".join(out)
 
     if units:
+        if boxes and len(boxes) == len(units) and any(boxes):
+            parts.append(_unit_map_html(boxes))
         if unit_name:
             parts.append("<div class=\"unit\">번호 하나 = %s · %d개</div>" % (esc(unit_name), len(units)))
         parts.append("<ol class=\"raw units\">")
@@ -223,7 +242,7 @@ def _toolbar(cols: List[Tuple[str, str]], maps: bool = True) -> str:
     for key, label in cols:
         parts.append("<label><input type=\"checkbox\" data-col=\"%s\" checked> %s</label>" % (esc(key), esc(label)))
     if maps:
-        parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"maps\" checked> 배치 그림(읽는 순서 번호)</label>")
+        parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"maps\" checked> 배치 그림(번호 위치)</label>")
     parts.append("</div>")
     return "".join(parts)
 
@@ -253,7 +272,7 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
             "기준" if m is ref else ("%.1f%%" % (100 * sum(sims) / len(sims)) if sims else "-"), esc(m.note)))
     rows.append("</table></div>")
     rows.append("<p class=\"legend\">Before 열의 번호는 라이브러리가 따로 꺼내 준 단위입니다. 같은 번호 안의 줄은 한 덩어리로 나온 것이고, "
-                "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서입니다.</p>")
+                "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서이고, 배치 그림의 회색 상자가 그 단위의 위치입니다.</p>")
     rows.append("<p class=\"legend\">Before 열 표시: <span style=\"background:var(--rm-bg);color:var(--rm-ink)\">빨강 취소선</span> = %s 방식이 제거한 문구, "
                 "<span style=\"background:var(--tt-bg);color:var(--tt-ink)\">초록</span> = %s 방식이 고른 제목. "
                 "일치율은 띄어쓰기와 줄바꿈을 무시하고 글자와 순서를 비교한 값입니다.</p>" % ((esc(ref.key),) * 2 if ref else ("-", "-")))
@@ -270,8 +289,10 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         body.append("<section class=\"page\" id=\"p%d\" style=\"%s\"><h2>%d쪽</h2><div class=\"cols\">" % (i + 1, _page_style(run, i), i + 1))
         for key, label, texts in run.befores:
             per_page = run.before_units.get(key, [])
+            box_pages = run.before_boxes.get(key, [])
             body.append(_before_col(key, label, texts[i] if i < len(texts) else "", removed_keys, title_key,
-                                    per_page[i] if i < len(per_page) else None, run.before_unit_names.get(key, "")))
+                                    per_page[i] if i < len(per_page) else None, run.before_unit_names.get(key, ""),
+                                    box_pages[i] if i < len(box_pages) else None))
         for m in run.methods:
             p = _page(m, i)
             badge = ""

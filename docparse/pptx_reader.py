@@ -474,6 +474,14 @@ def read(path: str, include_hidden: bool = False) -> Document:
                 t = shape.text_frame.text.replace("\v", "\n").strip()
                 if t:
                     naive.append(t)
+                    box = None
+                    try:
+                        x, y, w, h = shape.left, shape.top, shape.width, shape.height
+                        if None not in (x, y, w, h) and width > 0 and height > 0:
+                            box = (x / EMU / width, y / EMU / height, (x + w) / EMU / width, (y + h) / EMU / height)
+                    except Exception:
+                        box = None
+                    page.before_boxes.append(box)
         page.before = "\n".join(naive)
         page.before_units = list(naive)            # 도형(글상자) 하나가 한 단위
 

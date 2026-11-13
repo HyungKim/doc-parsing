@@ -44,12 +44,24 @@ def read(path: str) -> Document:
         doc.info["producer"] = str((pdf.metadata or {}).get("Producer", ""))
         for pno, page in enumerate(pdf.pages, 1):
             out = Page(number=pno, width=float(page.width), height=float(page.height))
+            # pdfplumber는 덩어리 정보 없이 줄 단위로만 준다. 줄마다 글과 위치를 함께 받는다.
             try:
-                out.before = page.extract_text() or ""
-            except Exception:
-                out.before = ""
-            # pdfplumber는 덩어리 정보 없이 줄 단위로만 준다
-            out.before_units = [line for line in out.before.split("\n") if line.strip()]
+                pw, ph = max(out.width, 1.0), max(out.height, 1.0)
+                for ln in page.extract_text_lines():
+                    text = ln.get("text") or ""
+                    if not text.strip():
+                        continue
+                    out.before_units.append(text)
+                    out.before_boxes.append((float(ln["x0"]) / pw, float(ln["top"]) / ph,
+                                             float(ln["x1"]) / pw, float(ln["bottom"]) / ph))
+                out.before = "\n".join(out.before_units)
+            except Exception:                      # 줄 위치를 못 받으면 글만 남긴다
+                try:
+                    out.before = page.extract_text() or ""
+                except Exception:
+                    out.before = ""
+                out.before_units = [line for line in out.before.split("\n") if line.strip()]
+                out.before_boxes = []
 
             chars: List[Ch] = []
             height = float(page.height)
