@@ -298,19 +298,20 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
     n = run.page_count
 
     rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>처리 시간</th><th>제목을 찾은 쪽</th>"
-            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>표에서 떼어 낸 글</th><th>비고</th></tr>"]
+            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>표에서 떼어 낸 글</th><th>색·크기로 나눈 줄</th><th>비고</th></tr>"]
     for m in run.methods:
         if m.error:
-            rows.append("<tr><td>%s</td><td colspan=\"8\" class=\"err\">%s</td></tr>" % (
+            rows.append("<tr><td>%s</td><td colspan=\"9\" class=\"err\">%s</td></tr>" % (
                 esc(m.label), esc(m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)))
             continue
         tables = [b for p in m.pages for b in p.blocks if b.kind == "table"]
         rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td>"
-                    "<td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td>%s</td></tr>" % (
+                    "<td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%d곳</td><td>%s</td></tr>" % (
                         esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
                         sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
                         len(tables), sum(1 for b in tables if b.flat_mode == "keyvalue"),
-                        sum(1 for p in m.pages for b in p.blocks if b.over_table), esc(m.note)))
+                        sum(1 for p in m.pages for b in p.blocks if b.over_table),
+                        sum(b.style_breaks for p in m.pages for b in p.blocks), esc(m.note)))
     rows.append("</table></div>")
     with_tables = [p.number for p in (ref.pages if ref else []) if any(b.kind == "table" for b in p.blocks)]
     if with_tables:
@@ -325,6 +326,12 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         rows.append("<p class=\"legend\"><span class=\"otag\">표 위에 얹힌 글</span> 은 PDF에서 표 영역 안에 있지만 표의 글이 아니라 "
                     "그 위에 따로 올려 둔 글(코멘트 글상자 등)로 판단해 표에서 떼어 낸 덩어리입니다. 표의 칸에 넣지 않고 표 다음에 따로 적습니다. "
                     "표의 글인데 잘못 떼어 냈거나, 코멘트인데 칸에 섞여 남은 것이 있으면 그 쪽 번호를 알려 주세요.</p>")
+    broken_pages = [p.number for p in (ref.pages if ref else []) if any(b.style_breaks for b in p.blocks)]
+    if broken_pages:
+        links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in broken_pages[:80])
+        rows.append("<p class=\"legend\"><b>색·크기로 줄을 나눈 쪽</b>: %s%s · 한 줄 안에서 글자색과 크기가 모두 다른 조각(옆에 붙인 코멘트, 뒤에 붙은 작은 설명 등)을 "
+                    "다른 줄로 나눈 곳입니다. 문장 가운데의 강조나 4자 미만의 짧은 표시는 나누지 않습니다.</p>" % (
+                        links, " 외 %d쪽" % (len(broken_pages) - 80) if len(broken_pages) > 80 else ""))
     rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄이 붙고, 같은 표를 두 가지 모양으로 보여 줍니다. "
                 "<b>칸 구분</b>은 칸을 | 로 이은 모양이고, <b>풀어 쓰기</b>는 값마다 행 머리글과 열 머리글을 붙인 모양입니다. "
                 "풀어 쓴 표는 표의 한 행이 한 문장이 되고, 문장마다 초록 번호가 붙습니다(번호는 구분용 표시이고 뽑은 글에는 들어가지 않습니다). "
@@ -454,6 +461,7 @@ def write_json(run: DocRun, out_path: str) -> None:
                                        "flat_lines": b.flat_lines,
                                        **(b.table or {})} for b in p.blocks if b.kind == "table"],
                            "over_table": [b.text for b in p.blocks if b.over_table],
+                           "style_breaks": sum(b.style_breaks for b in p.blocks),
                            "removed": [{"text": t, "reason": r} for t, r in p.removed]} for p in m.pages],
             } for m in run.methods
         },

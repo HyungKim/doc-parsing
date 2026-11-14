@@ -93,6 +93,7 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
         for b in ordered:
             ob = OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind)
             ob.over_table = b.kind == "text" and any(l.overlay for l in b.lines)
+            ob.style_breaks = sum(1 for l in b.lines if l.style_break and not l.removed) if b.kind == "text" else 0
             if b.kind == "table":
                 try:
                     info = tables.describe(b)

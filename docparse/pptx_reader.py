@@ -16,6 +16,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.oxml.ns import qn
 
+from . import stylesplit
 from .model import Block, Document, Line, Page
 from .textnorm import clean, has_bullet, has_marker, is_cjk, strip_bullet
 
@@ -62,6 +63,62 @@ def _sz(node) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _run_color(rpr):
+    """조각(run)에 직접 정해 둔 글자색. 정해 두지 않았으면 기본 글자색으로 본다."""
+    fill = rpr.find(qn("a:solidFill")) if rpr is not None else None
+    if fill is None:
+        return stylesplit.DEFAULT
+    rgb = fill.find(qn("a:srgbClr"))
+    if rgb is not None and len(rgb.get("val", "")) == 6:
+        try:
+            v = rgb.get("val")
+            return tuple(int(v[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        except ValueError:
+            return stylesplit.DEFAULT
+    scheme = fill.find(qn("a:schemeClr"))
+    if scheme is not None:
+        name = scheme.get("val", "")
+        return stylesplit.DEFAULT if name in ("tx1", "dk1") else "scheme:" + name
+    return stylesplit.DEFAULT
+
+
+def _style_chunks(p, base: float) -> Optional[list]:
+    """문단 안에서 글자색과 크기가 모두 달라지는 자리로 나눈 조각들 [(글, 그 조각의 run들)]. 나눌 곳이 없으면 None."""
+    runs = list(p.runs)
+    if len(runs) < 2 or "".join(r.text for r in runs) != p.text:
+        return None                                # 줄바꿈이나 필드가 섞인 문단은 건드리지 않는다
+    groups: List[list] = []
+    last = None                                    # 바로 앞의 글이 있는 조각의 (크기, 색)
+    for r in runs:
+        rpr = r._r.find(qn("a:rPr"))
+        style = (_sz(rpr) or base, _run_color(rpr))
+        if not r.text.strip():
+            (groups[-1] if groups else groups.append([]) or groups[-1]).append((r, style))
+            continue
+        if last is not None and stylesplit.both_differ(last[0], last[1], style[0], style[1]):
+            groups.append([])
+        if not groups:
+            groups.append([])
+        groups[-1].append((r, style))
+        last = style
+    if len(groups) < 2:
+        return None
+    info = []
+    for g in groups:
+        real = [(r, st) for r, st in g if r.text.strip()]
+        count = sum(len("".join(r.text.split())) for r, _ in real)
+        info.append((real[0][1][0], real[0][1][1], count) if real else (0.0, None, 0))
+    cuts = stylesplit.cut_points(info)
+    if not cuts:
+        return None
+    out, start = [], 0
+    for cut in cuts + [len(groups) - 1]:
+        part = [r for g in groups[start:cut + 1] for r, _ in g]
+        out.append(("".join(r.text for r in part), part))
+        start = cut + 1
+    return out
 
 
 def _list_style_size(lst, level: int) -> Optional[float]:
@@ -301,25 +358,36 @@ class _SlideReader:
             text = "\n".join(t for t in (clean(x) for x in raw.split("\n")) if t)
             if not text:
                 continue
-            listed = has_bullet(text)
-            text = strip_bullet(text)
-            if auto is not None:
-                start = int(auto.get("startAt", "1") or 1)
-                counters[level] = counters.get(level, start - 1) + 1
-                for deeper in [k for k in counters if k > level]:
-                    del counters[deeper]
-                text = "%s %s" % (_format_number(auto.get("type", "arabicPeriod"), counters[level]), text)
-                listed = True
-            else:
-                for same_or_deeper in [k for k in counters if k >= level]:
-                    del counters[same_or_deeper]
-            if not text:
-                continue
             base = self.sizes.base(shape, level, ph_type)
-            run_sizes = [(_sz(r._r.find(qn("a:rPr"))) or base) for r in p.runs] or [base]
-            size = max(run_sizes) * scale
-            bold = bool(p.runs) and all(r.font.bold is True for r in p.runs)
-            paras.append((text, size, bold, listed or has_marker(text)))
+            # 한 문단 안에서 글자색과 크기가 모두 다른 조각은 다른 줄로 나눈다(PDF와 같은 기준)
+            chunks = _style_chunks(p, base) or [(raw, list(p.runs))]
+            head = True
+            for chunk, runs in chunks:
+                text = "\n".join(t for t in (clean(x) for x in chunk.split("\n")) if t)
+                if not text:
+                    continue
+                listed = False
+                if head:                           # 글머리 기호와 번호는 문단의 첫 조각에만 해당한다
+                    head = False
+                    listed = has_bullet(text)
+                    text = strip_bullet(text)
+                    if auto is not None:
+                        start = int(auto.get("startAt", "1") or 1)
+                        counters[level] = counters.get(level, start - 1) + 1
+                        for deeper in [k for k in counters if k > level]:
+                            del counters[deeper]
+                        text = "%s %s" % (_format_number(auto.get("type", "arabicPeriod"), counters[level]), text)
+                        listed = True
+                    else:
+                        for same_or_deeper in [k for k in counters if k >= level]:
+                            del counters[same_or_deeper]
+                    if not text:
+                        continue
+                    listed = listed or has_marker(text)
+                run_sizes = [(_sz(r._r.find(qn("a:rPr"))) or base) for r in runs] or [base]
+                size = max(run_sizes) * scale
+                bold = bool(runs) and all(r.font.bold is True for r in runs)
+                paras.append((text, size, bold, listed, chunk is not chunks[0][0]))      # 마지막: 색·크기로 떼어 낸 조각인가
         if not paras:
             return None
 
@@ -329,11 +397,11 @@ class _SlideReader:
             x0, x1, y0, y1 = x0 + 7.2, x1 - 7.2, y0 + 3.6, y1 - 3.6
         usable = max(x1 - x0, 10.0)
         est = 0.0
-        for text, size, _, _ in paras:
+        for text, size, _, _, _ in paras:
             for piece in text.split("\n"):
                 est += max(1, math.ceil(_wide_units(piece) * size / usable)) * size * 1.2
         if not boxed and not shape.is_placeholder and abs(angle) < 3.0:
-            widest = max(min(_wide_units(piece) * size, usable) for text, size, _, _ in paras for piece in text.split("\n"))
+            widest = max(min(_wide_units(piece) * size, usable) for text, size, _, _, _ in paras for piece in text.split("\n"))
             if widest < usable * 0.9:
                 algn = None
                 for p in shape.text_frame.paragraphs:
@@ -359,9 +427,9 @@ class _SlideReader:
                 y1 = y0 + est
 
         block = Block()
-        for text, size, bold, listed in paras:
+        for text, size, bold, listed, broke in paras:
             block.lines.append(Line(text=text, x0=x0, y0=y0, x1=x1, y1=y1, size=size, bold=bold,
-                                    angle=angle, is_para=True, list_start=listed))
+                                    angle=angle, is_para=True, list_start=listed, style_break=broke))
         block.fit_bbox()
         if ph_type in TITLE_TYPES:
             block.hint = "title_ph"

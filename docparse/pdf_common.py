@@ -11,6 +11,7 @@ import re
 from collections import Counter
 from typing import List, Optional, Sequence
 
+from . import stylesplit
 from .model import Block, Line
 from .textnorm import clean, has_bullet, has_marker, is_bullet_only, is_marker_only, strip_bullet
 
@@ -109,6 +110,60 @@ def _segment_to_line(seg: List[Ch]) -> Optional[Line]:
     )
 
 
+def _style_pieces(seg: List[Ch]) -> List[List[Ch]]:
+    """한 줄로 이어진 글자들을, 글자색과 크기가 모두 달라지는 자리에서 나눈다(stylesplit의 기준)."""
+    runs: List[List[Ch]] = []
+    last = None                                    # 바로 앞의 보이는 글자
+    for c in seg:
+        if c.c.isspace():
+            if runs:
+                runs[-1].append(c)
+            else:
+                runs.append([c])
+            continue
+        if last is not None and stylesplit.both_differ(last.size, last.color, c.size, c.color):
+            runs.append([])
+        if not runs:
+            runs.append([])
+        runs[-1].append(c)
+        last = c
+    if len(runs) < 2:
+        return [seg]
+    info = []
+    for run in runs:
+        marks = [c for c in run if not c.c.isspace()]
+        info.append((marks[0].size, marks[0].color, len(marks)) if marks else (0.0, None, 0))
+    cuts = stylesplit.cut_points(info)
+    if not cuts:
+        return [seg]
+    pieces, start = [], 0
+    for cut in cuts + [len(runs) - 1]:
+        pieces.append([c for run in runs[start:cut + 1] for c in run])
+        start = cut + 1
+    return pieces
+
+
+def _segment_lines(seg: List[Ch]) -> List[Line]:
+    """이어진 글자 묶음 하나를 줄로 만든다. 색·크기가 모두 다른 조각이 섞여 있으면 조각마다 줄을 따로 만든다."""
+    out = []
+    for piece in _style_pieces(seg):
+        line = _segment_to_line(piece)
+        if line:
+            out.append(line)
+    if len(out) > 1:
+        top = min(l.y0 for l in out)
+        for i, l in enumerate(out):
+            l.row_top = top
+            if i:
+                l.style_break, l.after = True, out[i - 1]
+    return out
+
+
+def line_key(l: Line):
+    """덩어리 안에서 줄을 늘어놓는 순서. 같은 줄에서 나온 조각들은 글자 크기가 달라도 왼쪽부터 놓는다."""
+    return (l.row_top if l.row_top is not None else l.y0, l.x0)
+
+
 def _marker_like(seg: List[Ch]) -> bool:
     if len(seg) > 5:
         return False
@@ -140,14 +195,10 @@ def _upright_lines(chars: List[Ch]) -> List[Line]:
                     continue                       # 그림자 등으로 겹쳐 찍힌 같은 글자
                 limit = (MARKER_GAP if _marker_like(seg) else SPLIT_GAP) * max(p.size, c.size)
                 if c.x0 - p.x1 > limit:
-                    line = _segment_to_line(seg)
-                    if line:
-                        lines.append(line)
+                    lines.extend(_segment_lines(seg))
                     seg = []
             seg.append(c)
-        line = _segment_to_line(seg)
-        if line:
-            lines.append(line)
+        lines.extend(_segment_lines(seg))
     return lines
 
 
@@ -213,6 +264,25 @@ def group_blocks(lines: List[Line]) -> List[Block]:
     """세로로 붙어 있고 가로로 겹치는 줄들을 한 블록(문단 묶음)으로 합친다."""
     flat = [l for l in lines if abs(l.angle) < 3.0]
     tilted = [l for l in lines if abs(l.angle) >= 3.0]
+    # 같은 줄에서 색·크기로 나눈 조각들은, 묶는 동안에는 나누기 전의 한 줄로 다룬다(덩어리가 달라지지 않도록)
+    rows = {}
+    for l in flat:
+        head = l
+        while head.after is not None:
+            head = head.after
+        rows.setdefault(id(head), []).append(l)
+    joined = []
+    for members in rows.values():
+        if len(members) == 1:
+            joined.append(members[0])
+            continue
+        members.sort(key=lambda l: l.x0)
+        main = max(members, key=lambda l: len(l.text))
+        whole = Line(text=" ".join(m.text for m in members), x0=members[0].x0, y0=min(m.y0 for m in members),
+                     x1=max(m.x1 for m in members), y1=max(m.y1 for m in members), size=main.size, bold=main.bold)
+        whole.pieces = members                     # type: ignore[attr-defined]
+        joined.append(whole)
+    flat = joined
     flat.sort(key=lambda l: (l.y0, l.x0))
     n = len(flat)
     below = [[] for _ in range(n)]
@@ -267,7 +337,7 @@ def group_blocks(lines: List[Line]) -> List[Block]:
         grouped.setdefault(find(i), []).append(flat[i])
     blocks = []
     for ls in grouped.values():
-        b = Block(lines=sorted(ls, key=lambda l: (l.y0, l.x0)))
+        b = Block(lines=sorted((p for l in ls for p in (getattr(l, "pieces", None) or [l])), key=line_key))
         b.fit_bbox()
         blocks.append(b)
     for l in tilted:
@@ -442,7 +512,7 @@ def split_tables(chars: List[Ch], tables: List[dict]):
         for ri, row in enumerate(t["cells"]):
             out_row, right_row = [], []
             for ci, cell in enumerate(row):
-                ls = sorted(build_lines(bucket.get((ri, ci), [])), key=lambda l: (l.y0, l.x0))
+                ls = sorted(build_lines(bucket.get((ri, ci), [])), key=line_key)
                 sizes.extend(l.size for l in ls)
                 out_row.append(ls)
                 pad = 7.2 + 0.25 * (ls[0].size if ls else 0.0)      # 칸 안쪽 여백 어림

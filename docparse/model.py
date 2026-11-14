@@ -27,6 +27,9 @@ class Line:
     first_char_w: float = 0.0
     removed: str = ""             # 제거되었다면 그 이유
     overlay: bool = False         # PDF에서 표 위에 따로 얹혀 있던 글(표의 칸에 넣지 않고 떼어 냄)
+    style_break: bool = False     # 같은 줄에서 앞 조각과 글자색·크기가 모두 달라 떼어 낸 조각 (새 줄로 적는다)
+    after: Optional["Line"] = None      # 같은 줄에서 바로 앞에 있던 조각
+    row_top: Optional[float] = None     # 같은 줄에서 나온 조각들이 함께 쓰는 정렬 기준(그 줄의 위쪽 좌표)
 
 
 @dataclass
@@ -82,6 +85,7 @@ class OutBlock:
     box: Tuple[float, float, float, float]   # 0~1 로 정규화한 x0, y0, x1, y1
     kind: str = "text"
     over_table: bool = False                 # 표 위에 얹혀 있던 글이라 표에서 떼어 낸 덩어리 (PDF)
+    style_breaks: int = 0                    # 이 덩어리에서 글자색·크기가 모두 달라 줄을 나눈 횟수
     # 표일 때만: 같은 표를 '행마다 머리글을 붙여 풀어 쓴' 모양과 칸 구조 (tables.py)
     flat: str = ""
     flat_lines: List[str] = field(default_factory=list)   # 풀어 쓴 글을 문장(표의 한 행)마다 나눈 것

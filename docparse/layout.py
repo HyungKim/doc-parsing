@@ -344,6 +344,8 @@ def render_lines(lines: List[Line], ctx: WrapContext, right_hint: float = 0.0, n
     for cur in lines:
         if prev is None or cur.is_para or prev.is_para:
             out.append(cur.text)
+        elif cur.style_break:
+            out.append(cur.text)                   # 같은 줄이지만 색·크기가 모두 다른 조각 → 줄을 나눈다
         elif _same_row(prev, cur):
             out[-1] += " " + cur.text
         else:
