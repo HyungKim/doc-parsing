@@ -31,6 +31,10 @@ class ModelRun:
     best: Dict[str, Dict[str, int]] = field(default_factory=lambda: {"block": {}, "line": {}})   # 가장 가까운 기준 문장
     train_note: Dict[str, str] = field(default_factory=lambda: {"block": "", "line": ""})
     metrics: Dict[str, Dict[str, Optional[dict]]] = field(default_factory=dict)   # 보는 방식 → {"before", "after"}
+    # 견주기용 선형 SVM이 매긴 값(글의 지문 → 경계에서 떨어진 정도, 0이 경계). 화면의 점수에는 쓰지 않는다
+    svm: Dict[str, Optional[Dict[str, float]]] = field(default_factory=lambda: {"block": None, "line": None})
+    svm_note: Dict[str, str] = field(default_factory=lambda: {"block": "", "line": ""})
+    train_info: Dict[str, Optional[dict]] = field(default_factory=lambda: {"block": None, "line": None})   # 실제로 적용된 분류기 설정
     # 쪽 제목 반영(옵션). title_w가 0이면 title_before는 비어 있고 점수는 글 점수 그대로다
     title_w: float = 0.0                 # 제목 점수를 섞는 비율
     title_before: Dict[str, float] = field(default_factory=dict)          # 제목의 지문 → 기준 문장으로 매긴 점수
@@ -51,6 +55,15 @@ class ModelRun:
     def score(self, unit: str, key: str, when: str = "latest") -> Optional[float]:
         """글 점수(제목 반영 없음). unit: block | line.  when: before | after | latest(학습 후가 있으면 그것, 없으면 학습 전)"""
         return self._raw(unit, key, when)[0]
+
+    def svm_score(self, unit: str, key: str) -> Optional[float]:
+        got = self.svm.get(unit)
+        return None if got is None else got.get(key)
+
+    def svm_agg(self, block: BlockItem) -> Optional[float]:
+        vals = [self.svm_score("line", l.key) for l in block.lines]
+        vals = [v for v in vals if v is not None]
+        return max(vals) if vals else None
 
     def title_score(self, title: str) -> Optional[float]:
         """쪽 제목에 매긴 점수. 학습 전이든 후든 기준 문장으로 매긴 점수를 쓴다.
@@ -219,6 +232,12 @@ def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: P
                     if trained is not None:
                         r.after[unit] = trained["scores"]
                         save_classifier(labels_file.parent / "classifiers" / ("%s__%s.json" % (spec["key"], unit)), spec, unit, trained)
+                        r.train_info[unit] = trained.get("info")
+                        svm = trained.get("svm") or {}
+                        r.svm[unit], r.svm_note[unit] = svm.get("scores"), svm.get("note", "")
+                        if svm.get("model"):
+                            save_classifier(labels_file.parent / "classifiers" / ("%s__%s__svm.json" % (spec["key"], unit)), spec, unit,
+                                            {"folds": trained["folds"], "model": svm["model"]}, kind="linear_svm")
             else:
                 store = models.Store(cache_dir / (spec["key"] + ".npz"), meta)
                 pairs, new, sec = models.nli(path, [every[k] for k in keys], sent_texts, store, max_len, log)
@@ -267,10 +286,30 @@ def _items(res: Result, r: ModelRun, view: str, when: str, w: Optional[float] = 
     return [(res.block_labels.get(b.key), r.agg(b, when, w)) for b in blocks]
 
 
-def _measure(items: List[tuple], target: float) -> Optional[dict]:
+def view_items(res: Result, r: ModelRun, view: str, kind: str) -> Optional[List[tuple]]:
+    """분류기 종류를 견줄 때 쓰는 (정답, 점수) 목록. 쪽 제목 반영은 넣지 않은 글 점수다.
+
+    kind: before(기준 문장) | logreg(로지스틱 회귀) | svm(선형 SVM).  그 분류기가 없으면 None
+    """
+    unit = "line" if view != "block" else "block"
+    if kind == "before":
+        return _items(res, r, view, "before", 0.0)
+    if kind == "logreg":
+        return _items(res, r, view, "after", 0.0) if r.after[unit] is not None else None
+    if r.svm[unit] is None:
+        return None
+    blocks = res.blocks
+    if view == "line":
+        return [(res.labels.get(l.key), r.svm_score("line", l.key)) for b in blocks for l in b.lines]
+    if view == "block":
+        return [(res.block_labels.get(b.key), r.svm_score("block", b.key)) for b in blocks]
+    return [(res.block_labels.get(b.key), r.svm_agg(b)) for b in blocks]
+
+
+def _measure(items: List[tuple], target: float, boundary: float = 0.5) -> Optional[dict]:
     scored = [(y, s) for y, s in items if s is not None]
     return learn.measure([y for y, _ in scored if y is not None], [s for y, s in scored if y is not None],
-                         [s for _, s in scored], target)
+                         [s for _, s in scored], target, boundary)
 
 
 def _pair_gain(first: List[tuple], second: List[tuple], target: float) -> Optional[dict]:
@@ -312,6 +351,13 @@ def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]
             raw = _items(res, r, view, "before", 0.0)
             out[view]["edit"] = _pair_gain([(y, old_score(t)) for t, (y, _) in zip(things, raw)], raw, res.target)
 
+        # 분류기 종류 비교: 같은 정답·같은 묶음으로 학습시킨 로지스틱 회귀와 선형 SVM을 짝지어 견준다(글 점수로, 제목 반영 없이)
+        out[view]["svm"] = None
+        lr_items, svm_items = view_items(res, r, view, "logreg"), view_items(res, r, view, "svm")
+        if lr_items is not None and svm_items is not None:
+            out[view]["svm"] = {"logreg": _measure(lr_items, res.target), "svm": _measure(svm_items, res.target, 0.0),
+                                "gain": _pair_gain(lr_items, svm_items, res.target)}
+
         # 쪽 제목을 반영한 효과: 글 점수만(반영 전)과 제목을 섞은 점수(반영 후)를 짝지어 비교하고, 비율을 바꿔 가며 견준다
         out[view]["title"] = None
         if r.title_w and r.title_before:
@@ -329,10 +375,10 @@ def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]
     return out
 
 
-def save_classifier(path: Path, spec: dict, unit: str, trained: dict) -> None:
+def save_classifier(path: Path, spec: dict, unit: str, trained: dict, kind: str = "logistic_regression") -> None:
     """학습시킨 분류기를 파일로 남긴다(다음 단계에서 그대로 쓸 수 있게)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"model": spec["key"], "repo": spec["repo"], "unit": unit, "prefix": spec.get("prefix", ""),
+    data = {"model": spec["key"], "repo": spec["repo"], "unit": unit, "prefix": spec.get("prefix", ""), "classifier": kind,
             "trained": time.strftime("%Y-%m-%d %H:%M:%S"), "folds": trained["folds"], **trained["model"]}
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
@@ -342,6 +388,7 @@ def write_scores(res: Result, path: Path) -> None:
     ok = [r for r in res.runs if r.ok]
     rnd = lambda v: None if v is None else round(v, 4)
     weighted = bool(res.title_weight)
+    has_svm = any(r.svm["block"] is not None or r.svm["line"] is not None for r in ok)
 
     def both(get) -> dict:
         """모델마다 {"before", "after"}. get(모델, 단계) → 점수"""
@@ -356,12 +403,16 @@ def write_scores(res: Result, path: Path) -> None:
                 # scores 는 언제나 글 점수(제목 반영 없음). 제목을 반영한 점수는 final 에 따로 적는다
                 item = {"id": l.id, "key": l.key, "label": res.labels.get(l.key), "text": l.text,
                         "scores": both(lambda r, when, l=l: r.score("line", l.key, when))}
+                if has_svm:
+                    item["svm"] = {r.key: rnd(r.svm_score("line", l.key)) for r in ok if r.svm["line"] is not None}
                 if weighted:
                     item["final"] = both(lambda r, when, l=l: r.line_score(b, l, when))
                 lines.append(item)
             block = {"id": b.id, "page": b.page, "kind": b.kind, "key": b.key, "label": res.block_labels.get(b.key), "text": b.text,
                      "scores": both(lambda r, when: r.score("block", b.key, when)),
                      "scores_from_lines": both(lambda r, when: r.agg(b, when, 0.0) if when == "before" or r.after["line"] is not None else None)}
+            if has_svm:                            # 선형 SVM의 값(0이 경계). 견주기용
+                block["svm"] = {r.key: rnd(r.svm_score("block", b.key)) for r in ok if r.svm["block"] is not None}
             if weighted:
                 block["title"] = b.title
                 block["title_scores"] = {r.key: rnd(r.title_score(b.title)) for r in ok}
@@ -370,7 +421,8 @@ def write_scores(res: Result, path: Path) -> None:
             block["lines"] = lines
             blocks.append(block)
         docs.append({"file": d.name, "kind": d.kind, "blocks": blocks})
-    data = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "title_weight": res.title_weight,
+    settings = next(({u: r.train_info[u] for u in ("block", "line")} for r in ok if r.train_info["block"] or r.train_info["line"]), None)
+    data = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "title_weight": res.title_weight, "classifier_settings": settings,
             "sentences": [{"name": s.name, "positive": s.positive, "text": s.text} for s in res.sentences],
             "models": [{"key": r.key, "label": r.spec["label"], "kind": r.spec["kind"], "ok": r.ok, "error": r.error,
                         "metrics": r.metrics} for r in res.runs],

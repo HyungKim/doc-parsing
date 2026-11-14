@@ -19,6 +19,7 @@ import numpy as np
 from .items import BlockItem
 
 MIN_EACH = 4          # 분류기를 학습시키려면 '예'와 '아니오'가 각각 이만큼은 있어야 한다
+C_VALUE = 4.0         # 가중치가 커지는 것을 누르는 세기(클수록 덜 누름). 로지스틱 회귀와 선형 SVM에 같은 값을 쓴다
 
 
 # ---------------------------------------------------------------- 정답 파일
@@ -108,14 +109,17 @@ def at_threshold(y: np.ndarray, s: np.ndarray, everything: np.ndarray, thr: floa
     }
 
 
-def measure(y: List[int], s: List[float], everything: List[float], target: float) -> Optional[dict]:
-    """정답이 붙은 항목의 점수 s와 정답 y로 결과를 잰다. everything은 정답 유무와 상관없이 전체 항목의 점수."""
+def measure(y: List[int], s: List[float], everything: List[float], target: float, boundary: float = 0.5) -> Optional[dict]:
+    """정답이 붙은 항목의 점수 s와 정답 y로 결과를 잰다. everything은 정답 유무와 상관없이 전체 항목의 점수.
+
+    boundary: 그 점수에서 '예'와 '아니오'를 가르는 기본 문턱. 0~1 점수는 0.5, 선형 SVM의 값은 0이다.
+    """
     y_, s_, all_ = np.asarray(y, dtype=int), np.asarray(s, dtype=float), np.asarray(everything, dtype=float)
     if not len(y_) or not (y_ == 1).any() or not (y_ == 0).any():
         return None
     thr = recall_threshold(y_, s_, target)
     return {"n": int(len(y_)), "yes": int((y_ == 1).sum()), "no": int((y_ == 0).sum()), "auc": auc(y_, s_),
-            "half": at_threshold(y_, s_, all_, 0.5), "tuned": at_threshold(y_, s_, all_, thr)}
+            "half": at_threshold(y_, s_, all_, boundary), "tuned": at_threshold(y_, s_, all_, thr)}
 
 
 def gain(y: List[int], before: List[float], after: List[float], all_before: List[float], all_after: List[float],
@@ -148,13 +152,14 @@ def gain(y: List[int], before: List[float], after: List[float], all_before: List
 
 
 def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[str, str]) -> Tuple[Optional[dict], str]:
-    """임베딩 벡터와 정답으로 분류기(로지스틱 회귀)를 학습시킨다.
+    """임베딩 벡터와 정답으로 분류기(로지스틱 회귀)를 학습시킨다. 견줘 보려고 선형 SVM도 함께 학습시킨다.
 
     vectors: 글의 지문 → 벡터 (정답 유무와 상관없이 전체)
     labels:  글의 지문 → 0/1
     groups:  글의 지문 → 묶음 이름(같은 쪽의 글끼리는 시험과 학습에 나뉘어 들어가지 않게 한다)
-    반환: ({"scores": 지문 → 점수, "model": 계수, "folds": 나눈 수}, 못 했을 때의 이유)
+    반환: ({"scores": 지문 → 점수, "model": 계수, "folds": 나눈 수, "svm": 선형 SVM의 것 또는 None}, 못 했을 때의 이유)
       정답이 붙은 글의 점수는 그 글을 빼고 학습시킨 분류기가 매긴 것이다(교차 검증). 그래야 학습 후 결과를 공정하게 잴 수 있다.
+      선형 SVM은 로지스틱 회귀와 똑같은 묶음으로 나눠 학습시킨다. 그 값은 0~1이 아니라 경계에서 떨어진 정도이고 0이 경계다.
     """
     keys = [k for k in labels if k in vectors]
     y = np.array([labels[k] for k in keys], dtype=int)
@@ -169,25 +174,27 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     folds = min(5, n_yes, n_no)
 
     def fit(xs: np.ndarray, ys: np.ndarray):
-        return LogisticRegression(C=4.0, class_weight="balanced", max_iter=2000).fit(xs, ys)
+        return LogisticRegression(C=C_VALUE, class_weight="balanced", max_iter=2000).fit(xs, ys)
 
     oof = np.full(len(keys), np.nan)
+    splits: list = []
     splitters = []
     if len(set(g)) >= folds:
         splitters.append(lambda: StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=0).split(X, y, g))
     splitters.append(lambda: StratifiedKFold(n_splits=folds, shuffle=True, random_state=0).split(X, y))
-    done = False
-    for make in splitters:                         # 같은 쪽끼리 묶어 나누기가 안 되면 묶지 않고 나눈다
+    done, grouped = False, False
+    for which, make in enumerate(splitters):       # 같은 쪽끼리 묶어 나누기가 안 되면 묶지 않고 나눈다
         oof[:] = np.nan
         try:
-            for tr, te in make():
+            splits = list(make())
+            for tr, te in splits:
                 if len(set(y[tr])) < 2:
                     raise ValueError("한쪽 정답만 있는 묶음")
                 oof[te] = fit(X[tr], y[tr]).predict_proba(X[te])[:, 1]
         except ValueError:
             continue
         if not np.isnan(oof).any():
-            done = True
+            done, grouped = True, (len(splitters) == 2 and which == 0)
             break
     if not done:
         return None, "정답이 한쪽으로 몰려 있어 나눠서 시험할 수 없습니다"
@@ -201,4 +208,44 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     scores.update({k: float(p) for k, p in zip(keys, oof)})
     model = {"coef": [round(float(v), 6) for v in final.coef_[0]], "intercept": float(final.intercept_[0]),
              "yes": n_yes, "no": n_no}
-    return {"scores": scores, "model": model, "folds": folds}, ""
+    try:
+        svm = _train_svm(X, y, keys, splits, vectors, rest)
+        svm["model"].update({"yes": n_yes, "no": n_no})
+    except Exception as exc:                       # 견주기용이라, 실패해도 본래 결과는 그대로 낸다
+        svm = {"scores": None, "model": None, "params": None,
+               "note": "선형 SVM을 학습시키지 못했습니다 (%s: %s)" % (type(exc).__name__, str(exc)[:120])}
+    import sklearn
+    # 실제로 적용된 설정값(라이브러리가 알려 주는 그대로). 화면의 '분류기 설정'에 쓴다
+    info = {"sklearn": sklearn.__version__, "folds": folds, "grouped": grouped, "yes": n_yes, "no": n_no, "min_each": MIN_EACH,
+            "logreg": _plain(final.get_params()), "svm": svm.get("params")}
+    return {"scores": scores, "model": model, "folds": folds, "svm": svm, "info": info}, ""
+
+
+def _plain(params: dict) -> dict:
+    """설정값을 파일에 적을 수 있는 모양으로."""
+    return {k: (v if isinstance(v, (int, float, str, bool)) or v is None else str(v)) for k, v in params.items()}
+
+
+def _train_svm(X: np.ndarray, y: np.ndarray, keys: List[str], splits: list, vectors: Dict[str, np.ndarray], rest: List[str]) -> dict:
+    """선형 SVM(힌지 손실, L2). 로지스틱 회귀와 같은 묶음, 같은 세기(C), 같은 '예'에 무게 더 주기로 학습시킨다."""
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
+    from sklearn.svm import LinearSVC
+
+    def fit(xs: np.ndarray, ys: np.ndarray):
+        return LinearSVC(C=C_VALUE, loss="hinge", dual=True, class_weight="balanced", max_iter=50000, random_state=0).fit(xs, ys)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ConvergenceWarning)
+        oof = np.full(len(keys), np.nan)
+        for tr, te in splits:
+            oof[te] = fit(X[tr], y[tr]).decision_function(X[te])
+        final = fit(X, y)
+        scores: Dict[str, float] = {}
+        if rest:
+            scores.update({k: float(v) for k, v in zip(rest, final.decision_function(np.stack([vectors[k] for k in rest])))})
+        scores.update({k: float(v) for k, v in zip(keys, oof)})
+    note = "계산이 끝까지 수렴하지 않아 결과가 조금 덜 정확할 수 있습니다" if any(issubclass(w.category, ConvergenceWarning) for w in caught) else ""
+    return {"scores": scores, "note": note, "params": _plain(final.get_params()),
+            "model": {"coef": [round(float(v), 6) for v in final.coef_[0]], "intercept": float(final.intercept_[0])}}

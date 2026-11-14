@@ -8,10 +8,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
+
 from docparse.report import _shell, esc
 
 from .items import BlockItem, DocItems
-from .run import VIEWS, ModelRun, Result
+from . import learn
+from .run import VIEWS, ModelRun, Result, view_items
 
 CSS = """
 .box{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0;max-width:1100px}
@@ -66,6 +69,23 @@ table.viz td.w{color:var(--mute)}
 .trk .dot.a,.key .dot.a{background:var(--s1)}
 .key{display:inline-flex;align-items:center;gap:5px;margin-right:14px}
 .key .dot{display:inline-block}
+svg.strip{display:block;margin:0 6px}
+table.sum.set td{vertical-align:top;font-size:12.5px;line-height:1.5}
+table.sum.set td:nth-child(1){white-space:nowrap}
+table.sum.set td:nth-child(2),table.sum.set td:nth-child(3){min-width:120px}
+table.sum.set td:nth-child(4),table.sum.set td:nth-child(5){min-width:240px}
+table.sum.set td:nth-child(6){min-width:150px;color:var(--mute)}
+svg.strip .base{fill:var(--bg)}
+svg.strip .mid{stroke:var(--line);stroke-width:1}
+svg.strip .pass{fill:var(--s1);opacity:.16}
+svg.strip .no{fill:var(--mute)}
+svg.strip .yes{fill:var(--s1)}
+svg.strip .cut{stroke:var(--ink);stroke-width:1.5}
+.key .tick{display:inline-block;width:3px;height:12px;background:var(--s1)}
+.key .shade{display:inline-block;width:18px;height:10px;background:var(--mute);opacity:.5}
+.key .passk{display:inline-block;width:18px;height:14px;background:var(--s1);opacity:.16;border-left:2px solid var(--ink)}
+table.viz td.kind{color:var(--mute)}
+table.viz tr.pick td.kind{color:var(--ink);font-weight:700}
 """
 
 JS = """
@@ -273,11 +293,231 @@ def _glance(runs: List[ModelRun]) -> str:
             "<th>학습 전</th><th>학습 후</th><th>변화</th><th></th></tr>%s</table></div>" % "".join(rows))
 
 
-def _gain_cells(g: Optional[dict]) -> str:
-    """개선 정도 칸 둘: 순위 정확도 변화(범위 포함), 같은 만큼 찾을 때의 통과 비율 변화."""
+STRIP_W, STRIP_BINS = 320, 64
+
+
+def _strip(items: Optional[List[tuple]], target: float, name: str) -> str:
+    """정답이 붙은 글을 점수 순서대로(왼쪽이 낮은 점수) 늘어놓은 두 줄짜리 띠.
+
+    윗줄은 정답이 '예'인 글(파란 금 하나씩), 아랫줄은 '아니오'인 글(그 자리에 몰린 만큼 진한 회색).
+    세로선은 '예'의 target을 찾는 문턱이고, 그 오른쪽의 옅은 파란 바탕이 다음 단계로 넘어가는 부분이다.
+    점수의 크기가 아니라 순서로 그리므로, 점수의 단위가 다른 분류기끼리도 그대로 견줄 수 있다.
+    """
+    got = [(y, s) for y, s in (items or []) if y is not None and s is not None]
+    yes, no = [s for y, s in got if y == 1], [s for y, s in got if y == 0]
+    if not yes or not no:
+        return ""
+    n = len(got)
+    order = sorted(range(n), key=lambda i: got[i][1])
+    pos = [0.0] * n                                # 순위 위치 0~1. 같은 점수끼리는 가운데 자리
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and got[order[j + 1]][1] == got[order[i]][1]:
+            j += 1
+        for k in range(i, j + 1):
+            pos[order[k]] = ((i + j) / 2.0 + 0.5) / n
+        i = j + 1
+    bins = [0] * STRIP_BINS
+    for k, (y, _) in enumerate(got):
+        if y == 0:
+            bins[min(STRIP_BINS - 1, int(pos[k] * STRIP_BINS))] += 1
+    top = max(bins)
+    cut = learn.recall_threshold(np.array([y for y, _ in got]), np.array([s for _, s in got], dtype=float), target)   # '예'의 target을 찾는 문턱
+    cut_x = STRIP_W * sum(1 for _, s in got if s < cut) / n
+    passed = sum(1 for _, s in got if s >= cut)
+    w = STRIP_W / float(STRIP_BINS)
+    found = sum(1 for y, s in got if y == 1 and s >= cut)
+    parts = ["<svg class=\"strip\" width=\"%d\" height=\"24\" viewBox=\"0 0 %d 24\" role=\"img\">" % (STRIP_W, STRIP_W),
+             "<title>%s: 정답 붙은 글 %d개(예 %d, 아니오 %d)를 점수 낮은 것부터 늘어놓음. 세로선 오른쪽으로 %d개(%.0f%%)가 통과하고, 그 안에 '예'가 %d개</title>" % (
+                 esc(name), n, len(yes), len(no), passed, 100.0 * passed / n, found),
+             "<rect class=\"base\" x=\"0\" y=\"1\" width=\"%d\" height=\"22\"/>" % STRIP_W,
+             "<rect class=\"pass\" x=\"%.1f\" y=\"1\" width=\"%.1f\" height=\"22\"/>" % (cut_x, STRIP_W - cut_x)]
+    for b, c in enumerate(bins):                   # 아랫줄: 아니오
+        if c:
+            parts.append("<rect class=\"no\" x=\"%.1f\" y=\"14\" width=\"%.1f\" height=\"8\" opacity=\"%.2f\"/>" % (b * w, w, 0.12 + 0.58 * c / top))
+    width = 2.0 if len(yes) <= 150 else 1.2
+    for k, (y, _) in enumerate(got):               # 윗줄: 예
+        if y == 1:
+            parts.append("<rect class=\"yes\" x=\"%.1f\" y=\"2\" width=\"%.1f\" height=\"9\"/>" % (pos[k] * STRIP_W - width / 2, width))
+    parts.append("<line class=\"mid\" x1=\"0\" x2=\"%d\" y1=\"12.5\" y2=\"12.5\"/>" % STRIP_W)
+    parts.append("<line class=\"cut\" x1=\"%.1f\" x2=\"%.1f\" y1=\"0\" y2=\"24\"/></svg>" % (cut_x, cut_x))
+    return "".join(parts)
+
+
+def _classifier_section(res: Result, runs: List[ModelRun], target: str) -> str:
+    """분류기 종류 비교: 기준 문장만, 로지스틱 회귀, 선형 SVM을 같은 정답으로 견준다."""
+    if not any((r.metrics.get(v, {}).get("svm")) for r in runs for v, _ in VIEWS):
+        return ""
+    kinds = [("before", "기준 문장만 (학습 전)", 0.5), ("logreg", "로지스틱 회귀", 0.5), ("svm", "선형 SVM", 0.0)]
+    p = ["<h2>분류기 종류 비교 (로지스틱 회귀 대 선형 SVM)</h2>"]
+    p.append("<p class=\"legend\">같은 정답을 같은 묶음으로 나눠 두 가지 분류기를 학습시키고 견줬습니다(세기와 '예'에 무게를 더 주는 설정도 같게). "
+             "화면의 '학습 후' 점수는 <b>로지스틱 회귀</b>의 것이고, 선형 SVM은 견줘 보려고 함께 돌린 것입니다. "
+             "이 부분은 쪽 제목 반영 없이 글 점수로만 잽니다.</p>")
+    p.append("<p class=\"legend viz\"><b>띠 읽는 법</b>: 정답이 붙은 글을 점수가 낮은 것(왼쪽)부터 높은 것(오른쪽)까지 늘어놓았습니다. "
+             "<span class=\"key\"><i class=\"tick\"></i>윗줄: 정답이 '예'인 글</span><span class=\"key\"><i class=\"shade\"></i>아랫줄: 정답이 '아니오'인 글 (진할수록 많음)</span>"
+             "<span class=\"key\"><i class=\"passk\"></i>'예'의 %s를 찾는 문턱과, 그 문턱을 넘어 다음 단계로 가는 부분</span><br>"
+             "<b>윗줄의 파란 금은 오른쪽에, 아랫줄의 회색은 왼쪽에 몰려 있을수록</b> 잘 가른 것입니다. "
+             "<b>옅은 파란 바탕이 좁을수록</b> 놓치지 않으면서 많이 걸러 낸 것입니다. 띠에 마우스를 올리면 개수가 나옵니다.</p>" % target)
+    p.append("<div class=\"wrap\"><table class=\"viz\"><tr><th>보는 방식</th><th>모델</th><th>분류기</th>"
+             "<th><div class=\"axis\" style=\"width:%dpx\"><span>← 점수 낮음</span><span>점수 높음 →</span></div></th>"
+             "<th>순위 정확도</th><th>%s 찾는 문턱<br>통과 비율</th></tr>" % (STRIP_W, target))
+    for view, view_name in VIEWS:
+        first_view = True
+        for r in runs:
+            rows = []
+            for kind, kind_name, boundary in kinds:
+                items = view_items(res, r, view, kind)
+                if items is None:
+                    continue
+                scored = [(y, s) for y, s in items if s is not None]
+                m = learn.measure([y for y, _ in scored if y is not None], [s for y, s in scored if y is not None],
+                                  [s for _, s in scored], res.target, boundary)
+                rows.append((kind, kind_name, _strip(items, res.target, kind_name), m))
+            if not rows:
+                continue
+            best = max((m["auc"] for _, _, _, m in rows if m and m["auc"] is not None), default=None)
+            for k, (kind, kind_name, strip, m) in enumerate(rows):
+                lead = ""
+                if k == 0:
+                    if first_view:
+                        lead += "<td rowspan=\"%d\"><b>%s</b></td>" % (sum(1 for x in runs for kd, _, _ in kinds if view_items(res, x, view, kd) is not None), esc(view_name))
+                        first_view = False
+                    lead += "<td rowspan=\"%d\">%s</td>" % (len(rows), esc(r.spec["label"]))
+                top = m is not None and best is not None and m["auc"] is not None and abs(m["auc"] - best) < 1e-9
+                p.append("<tr class=\"%s%s\">%s<td class=\"kind\">%s</td><td>%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td></tr>" % (
+                    "first " if k == 0 else "", "pick" if top else "", lead, esc(kind_name), strip,
+                    ("<b>%s</b>" if top else "%s") % _num(m["auc"], 3) if m else "-", _pct(m["tuned"]["pass"]) if m else "-"))
+    p.append("</table></div>")
+    p.append("<p class=\"legend\">띠는 정답이 붙은 글만 그린 것이고, 오른쪽의 통과 비율은 정답이 없는 글까지 포함한 전체에서 잰 것이라 조금 다를 수 있습니다. "
+             "굵은 글씨는 그 모델·보는 방식에서 순위 정확도가 가장 높은 분류기입니다.</p>")
+    # 수치로 견주기
+    words = ("선형 SVM이 나음", "로지스틱 회귀가 나음", "차이를 가릴 수 없음", "차이 없음")
+    p.append("<p class=\"legend\"><b>수치로 견주기</b>: 차이는 선형 SVM − 로지스틱 회귀입니다. 괄호의 범위 전체가 0보다 크면 선형 SVM이, 0보다 작으면 로지스틱 회귀가 낫고, "
+             "0을 걸치면 지금 정답으로는 가릴 수 없습니다. '경계에서'는 분류기가 스스로 정한 경계(로지스틱 회귀는 0.5, 선형 SVM은 0)로 갈랐을 때입니다.</p>")
+    p.append("<div class=\"wrap\"><table class=\"sum num\"><tr><th rowspan=\"2\">보는 방식</th><th rowspan=\"2\">모델</th>"
+             "<th colspan=\"4\" class=\"grp\">로지스틱 회귀</th><th colspan=\"4\" class=\"grp\">선형 SVM</th><th colspan=\"2\" class=\"grp\">차이 (선형 SVM − 로지스틱 회귀)</th></tr>"
+             "<tr>%s<th>순위 정확도 차이</th><th>%s 찾는 문턱<br>통과 비율 차이</th></tr>" % (
+                 ("<th>순위 정확도</th><th>경계에서<br>찾아낸 비율</th><th>경계에서<br>통과 비율</th><th>%s 찾는 문턱<br>통과 비율</th>" % target) * 2, target))
+    notes = []
+    for view, view_name in VIEWS:
+        shown = [r for r in runs if r.metrics.get(view, {}).get("svm")]
+        for k, r in enumerate(shown):
+            s = r.metrics[view]["svm"]
+            aucs = [m["auc"] for m in (s["logreg"], s["svm"]) if m and m["auc"] is not None]
+            best = max(aucs) if aucs else None
+            first = "<td rowspan=\"%d\"><b>%s</b></td>" % (len(shown), esc(view_name)) if k == 0 else ""
+            p.append("<tr>%s<td>%s</td>%s%s%s</tr>" % (
+                first, esc(r.spec["label"]), _metric_cells(s["logreg"], best, res.target),
+                _metric_cells(s["svm"], best, res.target).replace("<td class=\"n", "<td class=\"g n"), _gain_cells(s["gain"], words)))
+    for r in runs:
+        for unit, name in (("block", "덩어리"), ("line", "줄")):
+            if r.svm_note[unit]:
+                notes.append("%s · %s: %s" % (esc(r.spec["label"]), name, esc(r.svm_note[unit])))
+    p.append("</table></div>")
+    if notes:
+        p.append("<p class=\"legend\">%s</p>" % "<br>".join(notes))
+    p.append("<p class=\"legend\">선형 SVM의 값은 0~1 점수가 아니라 경계에서 떨어진 정도라서(0이 경계), 문턱값의 단위가 로지스틱 회귀와 다릅니다. "
+             "순위 정확도와 통과 비율은 단위와 상관없이 견줄 수 있습니다. 학습시킨 선형 SVM은 <code>모델__단위__svm.json</code>으로 함께 저장됩니다.</p>")
+    p.append(_settings_table(runs))
+    return "".join(p)
+
+
+def _settings_table(runs: List[ModelRun]) -> str:
+    """분류기에 실제로 적용된 설정값과 그 뜻, 고른 이유, 다른 선택지."""
+    info = {u: next((r.train_info[u] for r in runs if r.train_info[u]), None) for u in ("block", "line")}
+    any_info = info["line"] or info["block"]
+    if not any_info:
+        return ""
+    lr, svm = any_info.get("logreg") or {}, any_info.get("svm") or {}
+
+    def penalty(params: dict) -> str:
+        if not params:
+            return "-"
+        kind = params.get("penalty")
+        if kind in (None, "deprecated"):           # 새 라이브러리는 섞는 비율(l1_ratio)로 나타낸다. 0이면 L2만
+            ratio = params.get("l1_ratio") or 0
+            kind = "l2" if not ratio else ("l1" if ratio == 1 else "l1과 l2를 섞음(%s)" % ratio)
+        return str(kind).upper() if kind in ("l1", "l2") else str(kind)
+
+    def weight_note() -> str:
+        parts = []
+        for u, name in (("block", "덩어리"), ("line", "줄")):
+            if info[u] and info[u]["yes"]:
+                parts.append("%s는 예 %d개, 아니오 %d개라 '예' 하나를 '아니오' %.1f개만큼" % (name, info[u]["yes"], info[u]["no"], info[u]["no"] / float(info[u]["yes"])))
+        return " 지금 정답으로는 " + " / ".join(parts) + " 무겁게 봅니다." if parts else ""
+
+    def fold_note() -> str:
+        parts = []
+        for u, name in (("block", "덩어리"), ("line", "줄")):
+            if info[u]:
+                parts.append("%s %d묶음%s" % (name, info[u]["folds"], "" if info[u]["grouped"] else "(쪽으로 묶지 못해 섞어 나눔)"))
+        return ", ".join(parts)
+
+    g = lambda params, key: "-" if not params or params.get(key) is None else str(params.get(key))
+    rows = [
+        ("분류기의 모양", "선형 (로지스틱 회귀)", "선형 (서포트 벡터 머신)" if svm else "-",
+         "글의 숫자마다 가중치를 곱해 모두 더한 값으로 판단합니다. 두 분류기는 이 모양이 같고, 가중치를 정하는 기준만 다릅니다.",
+         "이런 숫자 묶음은 뜻이 다른 글이 단순한 경계로 갈리도록 만들어져 있어, 정답이 적어도 잘 맞고 빠릅니다.",
+         "가까운 예시 찾기, 나무 계열, 작은 신경망, 모델 자체를 더 학습시키기"),
+        ("틀린 정도를 재는 기준", "로그 손실", ("힌지 손실 (loss=%s)" % g(svm, "loss")) if svm else "-",
+         "로그 손실은 모든 예시를 조금씩 다 반영하고 0~1 점수를 냅니다. 힌지 손실은 경계 가까이에 있는 예시만 반영하고, 경계에서 떨어진 정도를 냅니다.",
+         "두 분류기를 가르는 차이가 바로 이것입니다. 선형 SVM은 가장 기본이 되는 모양(힌지)으로 했습니다.",
+         "선형 SVM의 제곱 힌지 손실(squared_hinge)"),
+        ("벌점의 종류", penalty(lr), penalty(svm),
+         "가중치가 커지는 것을 누르는 방식입니다. 붙인 예시만 외우지 않게 합니다. L2는 모든 가중치를 고르게 누릅니다.",
+         "숫자 묶음은 숫자 하나하나가 뜻을 조금씩 나눠 갖고 있어, 일부만 남기는 L1보다 전부를 고르게 쓰는 L2가 맞습니다.",
+         "L1(쓸모없는 가중치를 0으로 만듦), L1과 L2를 섞기, 벌점 없음"),
+        ("벌점의 세기 (C)", g(lr, "C"), g(svm, "C"),
+         "클수록 덜 누릅니다. 작으면 점수가 가운데로 몰리고, 너무 크면 붙인 예시를 외웁니다.",
+         "길이를 1로 맞춘 숫자 묶음은 숫자 하나하나가 작아서, 라이브러리 기본값 1.0으로는 너무 세게 눌립니다. "
+         "두 분류기에 같은 값을 써서 차이가 '틀린 정도를 재는 기준'에서만 나오게 했습니다. <b>회사 자료로 맞춘 값은 아닙니다.</b>",
+         "0.25, 1, 16처럼 여러 값을 시험해 가장 좋은 것을 고르기"),
+        ("정답별 무게 (class_weight)", g(lr, "class_weight"), g(svm, "class_weight"),
+         "balanced는 드문 쪽의 예시 하나를 그만큼 무겁게 본다는 뜻입니다." + weight_note(),
+         "'예'가 드물어서, 그대로 두면 전부 '아니오'라고만 해도 대부분 맞는 셈이 되어 '예'를 놓칩니다. 걸러내기는 놓치지 않는 것이 중요합니다.",
+         "무게를 주지 않기, 무게를 직접 정하기"),
+        ("기준값 (fit_intercept)", {"True": "있음", "False": "없음"}.get(g(lr, "fit_intercept"), "-"), {"True": "있음", "False": "없음"}.get(g(svm, "fit_intercept"), "-"),
+         "가중치 말고 숫자 하나를 더 배워 점수 전체의 높낮이를 맞춥니다.",
+         "없으면 경계가 정해진 한 점을 지나야 해서 불리합니다. 라이브러리 기본값입니다.", "없음"),
+        ("푸는 방법", g(lr, "solver"), "liblinear (쌍대 좌표 하강, dual=%s)" % g(svm, "dual") if svm else "-",
+         "가중치를 찾아가는 계산 방법입니다. 같은 문제면 답은 같고 속도만 다릅니다.",
+         "로지스틱 회귀는 라이브러리 기본값이고, 선형 SVM은 힌지 손실에 쓸 수 있는 방법입니다.",
+         "로지스틱 회귀: liblinear, saga, newton-cg"),
+        ("되풀이 한도 / 멈추는 기준", "%s번 / %s" % (g(lr, "max_iter"), g(lr, "tol")), "%s번 / %s" % (g(svm, "max_iter"), g(svm, "tol")) if svm else "-",
+         "계산을 되풀이하는 최대 횟수와, 변화가 이보다 작아지면 멈춘다는 기준입니다.",
+         "중간에 끊기지 않고 끝까지 계산되도록 넉넉하게 잡았습니다(라이브러리 기본값은 100번, 1000번).", "-"),
+        ("입력", "길이를 1로 맞춘 숫자 묶음 그대로", "같음" if svm else "-",
+         "모델이 만든 숫자 묶음을 다른 변환 없이 넣습니다.",
+         "길이를 맞춘 것으로 충분하고, 정답이 적을 때는 변환을 더하면 불안정해집니다.",
+         "숫자마다 평균과 크기를 맞추기, 숫자 수를 줄이기(PCA)"),
+        ("시험 방법", "최대 5묶음으로 나눠 돌아가며 시험. 이번에는 " + fold_note(), "로지스틱 회귀와 똑같은 묶음" if svm else "-",
+         "정답이 붙은 글의 점수는 그 글을 빼고 학습시킨 분류기가 매깁니다. 같은 쪽의 글은 같은 묶음에 둡니다.",
+         "자기가 본 정답을 맞히는 것으로 수치가 부풀지 않게 하려는 것입니다. 같은 쪽의 비슷한 글이 학습과 시험에 갈라 들어가는 것도 막습니다.",
+         "문서 단위로 묶기, 시험용 문서를 따로 떼어 두기"),
+        ("학습에 필요한 최소 정답", "'예'와 '아니오' 각각 %d개" % any_info.get("min_each", 4), "같음" if svm else "-",
+         "이보다 적으면 학습시키지 않습니다.",
+         "나눠서 시험하려면 묶음마다 양쪽 정답이 있어야 합니다. 수치를 믿으려면 이보다 훨씬 많아야 합니다.", "-"),
+    ]
+    body = "".join("<tr><td><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+        esc(a), esc(b), esc(c), esc(d), e, esc(f)) for a, b, c, d, e, f in rows)
+    return ("<details class=\"box\" style=\"max-width:none\" open><summary><b>분류기 설정</b> · 실제로 적용된 값, 뜻, 고른 이유, 다른 선택지 (scikit-learn %s)</summary>"
+            "<p class=\"legend\">값은 학습에 쓴 라이브러리가 알려 준 그대로입니다. 모델 세 가지와 덩어리·줄 단위에 모두 같은 설정을 씁니다. "
+            "화면의 '학습 후' 점수에 쓰이는 것은 로지스틱 회귀입니다.</p>"
+            "<div class=\"wrap\"><table class=\"sum set\"><tr><th>설정</th><th>로지스틱 회귀</th><th>선형 SVM</th><th>뜻</th><th>이 값을 고른 이유</th><th>다른 선택지</th></tr>%s</table></div></details>" % (
+                esc(any_info.get("sklearn", "")), body))
+
+
+def _gain_cells(g: Optional[dict], words: Optional[tuple] = None) -> str:
+    """개선 정도 칸 둘: 순위 정확도 변화(범위 포함), 같은 만큼 찾을 때의 통과 비율 변화.
+
+    words: (나아졌을 때, 나빠졌을 때, 가릴 수 없을 때, 차이가 없을 때)의 말. 없으면 나아짐/나빠짐/우연일 수 있음/변화 없음
+    """
     if g is None:
         return "<td class=\"n\">-</td><td class=\"n\">-</td>"
     word = _gain_word(g)
+    if words:
+        word = {"나아짐": words[0], "나빠짐": words[1], "우연일 수 있음": words[2], "변화 없음": words[3]}[word]
     cls = "up" if g["sure"] else "down" if g["worse"] else "flat"
     first = "<td class=\"n %s\">%+.3f <small class=\"sub\">(%+.3f ~ %+.3f) %s</small></td>" % (
         cls, g["auc_gain"], g["auc_low"], g["auc_high"], word)
@@ -477,6 +717,10 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
         p.append("</table></div>")
         p.append("<p class=\"legend\"><b>덩어리로 넣음</b>과 <b>줄로 넣어 덩어리로 합침</b>은 둘 다 덩어리 단위로 맞았는지를 재므로 서로 바로 비교할 수 있습니다"
                  "(어느 크기로 넣는 것이 나은지는 이 두 줄을 보세요). <b>줄로 넣음</b>은 줄 단위로 맞았는지를 잰 것입니다.</p>")
+
+    # 분류기 종류 비교
+    if has_labels:
+        p.append(_classifier_section(res, runs, target))
 
     # 기준 문장을 고친 효과
     if res.previous:
