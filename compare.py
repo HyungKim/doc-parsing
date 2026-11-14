@@ -28,7 +28,7 @@ from docparse import report, units
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "3.5"
+VERSION = "4.0"
 
 
 def log(msg: str) -> None:
@@ -225,7 +225,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             for s in e["pair_stats"]:
                 log("  PPTX↔PDF 일치율 %.1f%%" % (100 * sum(s["loose"]) / max(s["n"], 1)))
 
-    report.write_index(entries, str(out_dir / "index.html"), footer)
+    next_stage = "screen/index.html" if (out_dir / "screen" / "index.html").exists() else ""
+    report.write_index(entries, str(out_dir / "index.html"), footer, next_stage)
     log("완료: %s" % (out_dir / "index.html").resolve())
     return 0
 

@@ -454,8 +454,12 @@ def write_pair_report(pptx: DocRun, pdf: DocRun, out_path: str) -> List[dict]:
 
 # ---------------------------------------------------------------- 목록, JSON
 
-def write_index(entries: List[dict], out_path: str, footer: str = "") -> None:
-    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>처리 시간</th><th>PPTX ↔ PDF 일치율</th><th>입력 단위</th></tr>"]
+def write_index(entries: List[dict], out_path: str, footer: str = "", next_stage: str = "") -> None:
+    rows = []
+    if next_stage:                                 # 2단계(걸러내기 비교) 결과가 있으면 그리로 가는 길을 둔다
+        rows.append("<p class=\"legend\">다음 단계: <a href=\"%s\"><b>1차 걸러내기 비교 화면</b></a> "
+                    "(이 추출 결과에 모델 네 가지로 점수를 매긴 것. screen.bat으로 새로 만듭니다)</p>" % esc(next_stage))
+    rows += ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>처리 시간</th><th>PPTX ↔ PDF 일치율</th><th>입력 단위</th></tr>"]
     for e in entries:
         run: DocRun = e["run"]
         times = " · ".join("%.2f초" % m.seconds if not m.error else "실패" for m in run.methods)

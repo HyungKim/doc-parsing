@@ -6,3 +6,10 @@ __pycache__/
 .claude/
 .DS_Store
 ~$*
+
+models/
+labels/
+screen_sentences.txt
+screen_sentences.backup.txt
+screen_options.txt
+.tmp/
