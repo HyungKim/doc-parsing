@@ -28,7 +28,7 @@ from docparse import report, units
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "3.4"
+VERSION = "3.5"
 
 
 def log(msg: str) -> None:
@@ -67,7 +67,8 @@ class Options:
     def __init__(self, args):
         self.images = not args.no_images
         self.include_hidden = args.include_hidden
-        self.rules = {"repeat_ratio": args.repeat_ratio, "extra_keywords": None}
+        self.rules = {"repeat_ratio": args.repeat_ratio, "extra_keywords": None,
+                      "min_chars": max(args.min_chars, 0), "need_korean": not args.keep_non_korean}
         if args.keywords:
             words = [w.strip() for w in args.keywords.split(",") if w.strip()]
             if words:
@@ -153,6 +154,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--include-hidden", action="store_true", help="PPTX의 숨긴 슬라이드도 포함")
     ap.add_argument("--repeat-ratio", type=float, default=0.6, help="본문 영역의 글을 반복 문구로 볼 페이지 비율 (기본 0.6)")
     ap.add_argument("--keywords", default="", help="항상 제거할 문구를 쉼표로 구분 (예: \"사내한,Draft\")")
+    ap.add_argument("--min-chars", type=int, default=5, help="띄어쓰기를 포함해 이 글자 수 이하인 줄은 출력에서 뺌 (기본 5, 0이면 빼지 않음)")
+    ap.add_argument("--keep-non-korean", action="store_true", help="한글이 없는 줄도 출력에 남김")
     args = ap.parse_args(argv)
 
     files = collect(args.inputs)

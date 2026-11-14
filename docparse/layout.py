@@ -319,11 +319,14 @@ def estimate_right_edges(pages: List[Page]) -> None:
 
 
 def render_lines(lines: List[Line], ctx: WrapContext, right_hint: float = 0.0, no_wrap: bool = False,
-                 inner=None) -> str:
+                 inner=None, groups: Optional[list] = None) -> str:
+    """줄들을 문단으로 합쳐 글로 만든다. groups에 목록을 주면 적힌 줄마다 그 줄을 이룬 원래 줄들을 담아 준다."""
     lines = [l for l in lines if not l.removed and l.text]
     if not lines:
         return ""
     if all(l.is_para for l in lines):
+        if groups is not None:
+            groups.extend([l] for l in lines)
         return "\n".join(l.text for l in lines)
     right = max(max(l.x1 for l in lines), right_hint)
     centered = False
@@ -340,8 +343,10 @@ def render_lines(lines: List[Line], ctx: WrapContext, right_hint: float = 0.0, n
         return right - prev.x1
 
     out: List[str] = []
+    src: List[List[Line]] = []                     # out의 줄마다 그 줄을 이룬 원래 줄들
     prev = None
     for cur in lines:
+        before = len(out)
         if prev is None or cur.is_para or prev.is_para:
             out.append(cur.text)
         elif cur.style_break:
@@ -360,11 +365,17 @@ def render_lines(lines: List[Line], ctx: WrapContext, right_hint: float = 0.0, n
                 out.append(cur.text)
             else:
                 out[-1] += _joiner(prev, cur, s, ctx) + cur.text
+        if len(out) > before:
+            src.append([cur])
+        else:
+            src[-1].append(cur)
         prev = cur
+    if groups is not None:
+        groups.extend(src)
     return "\n".join(out)
 
 
-def render_block(block: Block, ctx: WrapContext) -> str:
+def render_block(block: Block, ctx: WrapContext, groups: Optional[list] = None) -> str:
     if block.kind == "table":
         cell_lines = getattr(block, "cell_lines", None)
         if cell_lines is not None:
@@ -377,4 +388,4 @@ def render_block(block: Block, ctx: WrapContext) -> str:
         rows = [" | ".join(c for c in row if c) for row in block.rows]
         return "\n".join(r for r in rows if r)
     return render_lines(block.lines, ctx, getattr(block, "right_hint", 0.0), getattr(block, "no_wrap", False),
-                        getattr(block, "inner", None))
+                        getattr(block, "inner", None), groups)

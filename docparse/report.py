@@ -122,6 +122,10 @@ border:1px solid var(--line);border-radius:4px;margin-bottom:8px;overflow:hidden
 .map i.t{border-color:#17803f;background:rgba(23,128,63,.10)}
 .map i.t b{background:#17803f}
 .col.before .map i{border-color:#6b7280;background:rgba(107,114,128,.10)}
+.map i.x{border:1.5px dashed #dc2626;background:rgba(220,38,38,.10)}
+.map i.x b{background:#dc2626;left:auto;right:-1px}
+body.noremoved .map i.x{display:none}
+.rm .why{display:inline-block;padding:0 5px;border-radius:3px;background:var(--rm-bg);font-size:11px;margin-left:6px}
 .col.before .map i b{background:#6b7280}
 body.nomap .map{display:none}
 .err{color:var(--rm-ink)}
@@ -136,7 +140,7 @@ document.querySelectorAll('input[data-col]').forEach(function(cb){
     document.querySelectorAll('.col[data-col="'+cb.dataset.col+'"]').forEach(function(el){el.style.display=cb.checked?'':'none'});
   });
 });
-[['tpipe','nopipe'],['tflat','noflat']].forEach(function(x){
+[['tpipe','nopipe'],['tflat','noflat'],['tremoved','noremoved']].forEach(function(x){
   var el=document.getElementById(x[0]);
   if(el){el.addEventListener('change',function(){document.body.classList.toggle(x[1],!el.checked)});}
 });
@@ -155,10 +159,11 @@ def _shell(title: str, sub: str, bar: str, body: str) -> str:
     ) % (esc(title), CSS, esc(title), sub, bar, body, JS)
 
 
-def _box_html(box, label: str, cls: str = "") -> str:
+def _box_html(box, label: str, cls: str = "", tip: str = "") -> str:
     x0, y0, x1, y1 = box
-    return "<i%s style=\"left:%.2f%%;top:%.2f%%;width:%.2f%%;height:%.2f%%\"><b>%s</b></i>" % (
-        " class=\"%s\"" % cls if cls else "", x0 * 100, y0 * 100, max(x1 - x0, 0.01) * 100, max(y1 - y0, 0.01) * 100, label)
+    return "<i%s%s style=\"left:%.2f%%;top:%.2f%%;width:%.2f%%;height:%.2f%%\"><b>%s</b></i>" % (
+        " class=\"%s\"" % cls if cls else "", " title=\"%s\"" % esc(tip) if tip else "",
+        x0 * 100, y0 * 100, max(x1 - x0, 0.01) * 100, max(y1 - y0, 0.01) * 100, label)
 
 
 def _map_html(p: PageOut) -> str:
@@ -167,6 +172,8 @@ def _map_html(p: PageOut) -> str:
         parts.append(_box_html(p.title_box, "제목", "t"))
     for n, b in enumerate(p.blocks, 1):
         parts.append(_box_html(b.box, str(n)))
+    for box, why, text in p.removed_boxes:         # 제거한 글이 있던 자리 (빨간 점선)
+        parts.append(_box_html(box, "×", "x", "%s: %s" % (why, one_line(text)[:80])))
     parts.append("</div>")
     return "".join(parts)
 
@@ -233,7 +240,7 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
     if p.removed:
         parts.append("<div class=\"rm\"><b>제거한 문구</b>")
         for text, reason in p.removed:
-            parts.append("<div><s>%s</s><small>%s</small></div>" % (esc(one_line(text)), esc(reason)))
+            parts.append("<div><s>%s</s><span class=\"why\">%s</span></div>" % (esc(one_line(text)), esc(reason)))
         parts.append("</div>")
     parts.append("</article>")
     return "".join(parts)
@@ -278,7 +285,8 @@ def _toolbar(cols: List[Tuple[str, str]], maps: bool = True) -> str:
     for key, label in cols:
         parts.append("<label><input type=\"checkbox\" data-col=\"%s\" checked> %s</label>" % (esc(key), esc(label)))
     if maps:
-        parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"maps\" checked> 배치 그림(번호 위치)</label>")
+        parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"maps\" checked> 배치 그림(번호 위치)</label>"
+                     "<label><input type=\"checkbox\" id=\"tremoved\" checked> 제거한 자리(빨간 점선)</label>")
     parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"tpipe\" checked> 표: 칸 구분</label>"
                  "<label><input type=\"checkbox\" id=\"tflat\" checked> 표: 풀어 쓰기</label>")
     parts.append("</div>")
@@ -326,6 +334,24 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         rows.append("<p class=\"legend\"><span class=\"otag\">표 위에 얹힌 글</span> 은 PDF에서 표 영역 안에 있지만 표의 글이 아니라 "
                     "그 위에 따로 올려 둔 글(코멘트 글상자 등)로 판단해 표에서 떼어 낸 덩어리입니다. 표의 칸에 넣지 않고 표 다음에 따로 적습니다. "
                     "표의 글인데 잘못 떼어 냈거나, 코멘트인데 칸에 섞여 남은 것이 있으면 그 쪽 번호를 알려 주세요.</p>")
+    counts: Dict[str, int] = {}
+    filtered_pages = []
+    for p in (ref.pages if ref else []):
+        hit = False
+        for _, why in p.removed:
+            kind = "한글이 없는 줄·표" if why.startswith("한글이 없는") else "짧은 줄" if "짧은 줄" in why else "반복·보안 문구 등"
+            counts[kind] = counts.get(kind, 0) + 1
+            hit = hit or kind != "반복·보안 문구 등"
+        if hit:
+            filtered_pages.append(p.number)
+    if counts:
+        rows.append("<p class=\"legend\"><b>제거한 글</b>: %s. 쪽마다 After 열 아래 '제거한 문구'에 내용과 이유가 있고, "
+                    "배치 그림의 빨간 점선 상자가 그 글이 있던 자리입니다(마우스를 올리면 내용이 나옵니다). Before 열에서는 빨강 취소선으로 보입니다.</p>" % (
+                        ", ".join("%s %d개" % (esc(k), v) for k, v in counts.items())))
+    if filtered_pages:
+        links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in filtered_pages[:80])
+        rows.append("<p class=\"legend\"><b>한글이 없거나 짧아서 줄을 뺀 쪽</b>: %s%s</p>" % (
+            links, " 외 %d쪽" % (len(filtered_pages) - 80) if len(filtered_pages) > 80 else ""))
     broken_pages = [p.number for p in (ref.pages if ref else []) if any(b.style_breaks for b in p.blocks)]
     if broken_pages:
         links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in broken_pages[:80])

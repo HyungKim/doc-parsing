@@ -75,8 +75,9 @@ def summarize(units: Dict[str, List[dict]]) -> Dict[str, dict]:
 
 def write_units_json(name: str, kind: str, pages: List[PageOut], out_path: str, version: str = "") -> Dict[str, List[dict]]:
     units = build_units(pages)
+    removed = [{"page": p.number, "text": text, "reason": why} for p in pages for text, why in p.removed]
     data = {"file": name, "kind": kind, "version": version, "short_chars": SHORT_CHARS,
-            "summary": summarize(units), "units": units}
+            "summary": summarize(units), "units": units, "removed": removed}
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return units
@@ -153,6 +154,10 @@ def write_units_report(name: str, kind: str, pages: List[PageOut], units: Dict[s
     rows.append("<p class=\"legend\"><span class=\"d\">노랑</span> = %d자 이하의 짧은 입력(소제목처럼 혼자서는 뜻이 부족할 수 있는 것). "
                 "세 열의 표는 값마다 머리글을 붙여 풀어 쓴 모양이고, 풀어 쓰지 못한 표만 칸 구분 모양입니다(맨 왼쪽 열의 body는 칸 구분 모양). "
                 "상자 위의 이름(p4-b3-l2 = 4쪽 3번 덩어리 2번째 줄)은 파일에 있는 id입니다.</p>" % SHORT_CHARS)
+    n_removed = sum(len(p.removed) for p in pages)
+    if n_removed:
+        rows.append("<p class=\"legend\">반복 문구, 한글이 없는 줄, 짧은 줄 등 <b>제거한 글 %d개</b>는 어느 열에도 들어 있지 않습니다. "
+                    "무엇을 왜 뺐는지는 쪽마다 맨 아래 '제거한 글'을 펼치거나 before/after 리포트에서 볼 수 있고, 파일에는 removed 목록으로 들어 있습니다.</p>" % n_removed)
     if doc_file:
         rows.append("<p class=\"legend\"><a href=\"%s\">before/after 리포트로 가기</a> · 쪽 번호 옆의 링크로 그 쪽의 배치 그림을 볼 수 있습니다.</p>" % esc(doc_file))
 
@@ -184,7 +189,11 @@ def write_units_report(name: str, kind: str, pages: List[PageOut], units: Dict[s
             items = by_page.get(p.number, {}).get(key, [])
             body.append("<article class=\"col after\" data-col=\"%s\"><h3><span>%s</span><span class=\"badge\">입력 %d개</span></h3>"
                         "<ol class=\"ulist\">%s</ol></article>" % (key, esc(label), len(items), "".join(_item_html(u) for u in items)))
-        body.append("</div></section>")
+        body.append("</div>")
+        if p.removed:
+            body.append("<details class=\"shape\"><summary>제거한 글 %d개 (어느 열에도 들어가지 않음)</summary><div class=\"rm\">%s</div></details>" % (
+                len(p.removed), "".join("<div><s>%s</s> <span class=\"sub\">%s</span></div>" % (esc(" ".join(t.split())), esc(why)) for t, why in p.removed)))
+        body.append("</section>")
 
     bar = ["<div class=\"bar\"><b>표시할 열</b><label><input type=\"checkbox\" data-col=\"raw\" checked> 지금 실제 출력</label>"]
     for key, label in UNIT_NAMES:

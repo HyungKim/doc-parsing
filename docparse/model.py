@@ -102,6 +102,7 @@ class PageOut:
     blocks: List[OutBlock] = field(default_factory=list)   # 읽는 순서대로(제목 제외)
     title_box: Optional[Tuple[float, float, float, float]] = None
     removed: List[Tuple[str, str]] = field(default_factory=list)   # (문구, 이유)
+    removed_boxes: List[Tuple[tuple, str, str]] = field(default_factory=list)   # 제거한 글의 (자리, 이유, 문구). 배치 그림에 표시한다
 
     @property
     def body(self) -> str:
