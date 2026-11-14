@@ -92,8 +92,12 @@ ol.blocks{margin:6px 0 0;padding-left:26px}
 ol.blocks li{margin:0 0 6px;padding-left:2px}
 ol.blocks li::marker{color:var(--box);font-weight:700;font-size:12px}
 ol.blocks li.tbl{border-left:3px solid var(--box);padding-left:8px;background:rgba(31,95,191,.05);border-radius:0 4px 4px 0}
-ol.blocks li.tbl .txt::before{content:"표";display:inline-block;margin-right:6px;padding:0 5px;border-radius:3px;
-background:var(--box);color:var(--card);font-size:11px;font-weight:700;vertical-align:1px}
+.tv{margin:2px 0 8px}
+.tv .tag{display:inline-block;padding:0 6px;border-radius:3px;background:var(--box);color:var(--card);font-size:11px;font-weight:700}
+.tv-flat .tag{background:#17803f}
+.tv-flat .tag.no{background:var(--mute)}
+body.nopipe .tv-pipe{display:none}
+body.noflat .tv-flat{display:none}
 .rm{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px;font-size:13px;color:var(--rm-ink)}
 .rm div{margin:1px 0}
 .rm s{text-decoration-thickness:1px}
@@ -125,6 +129,10 @@ document.querySelectorAll('input[data-col]').forEach(function(cb){
   cb.addEventListener('change',function(){
     document.querySelectorAll('.col[data-col="'+cb.dataset.col+'"]').forEach(function(el){el.style.display=cb.checked?'':'none'});
   });
+});
+[['tpipe','nopipe'],['tflat','noflat']].forEach(function(x){
+  var el=document.getElementById(x[0]);
+  if(el){el.addEventListener('change',function(){document.body.classList.toggle(x[1],!el.checked)});}
 });
 var mapToggle=document.getElementById('maps');
 if(mapToggle){mapToggle.addEventListener('change',function(){document.body.classList.toggle('nomap',!mapToggle.checked)});}
@@ -199,7 +207,17 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
         parts.append("<div class=\"unit\">이 쪽에서 표로 인식한 덩어리 %d개</div>" % tables)
     parts.append("<ol class=\"blocks\">")
     for b in p.blocks:
-        parts.append("<li%s><div class=\"txt\">%s</div></li>" % (" class=\"tbl\"" if b.kind == "table" else "", mark(b.text)))
+        if b.kind != "table":
+            parts.append("<li><div class=\"txt\">%s</div></li>" % mark(b.text))
+            continue
+        inner = "<div class=\"tv tv-pipe\"><span class=\"tag\">표 · 칸 구분</span><div class=\"txt\">%s</div></div>" % mark(b.text)
+        if b.flat:
+            if b.flat_mode == "keyvalue":
+                tag = "<span class=\"tag\">표 · 풀어 쓰기</span>"
+            else:
+                tag = "<span class=\"tag no\">표 · 풀어 쓰지 않음 (%s)</span>" % esc(b.flat_reason)
+            inner += "<div class=\"tv tv-flat\">%s<div class=\"txt\">%s</div></div>" % (tag, esc(b.flat))
+        parts.append("<li class=\"tbl\">%s</li>" % inner)
     parts.append("</ol>")
     if p.removed:
         parts.append("<div class=\"rm\"><b>제거한 문구</b>")
@@ -250,6 +268,8 @@ def _toolbar(cols: List[Tuple[str, str]], maps: bool = True) -> str:
         parts.append("<label><input type=\"checkbox\" data-col=\"%s\" checked> %s</label>" % (esc(key), esc(label)))
     if maps:
         parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"maps\" checked> 배치 그림(번호 위치)</label>")
+    parts.append("<span class=\"sep\"></span><label><input type=\"checkbox\" id=\"tpipe\" checked> 표: 칸 구분</label>"
+                 "<label><input type=\"checkbox\" id=\"tflat\" checked> 표: 풀어 쓰기</label>")
     parts.append("</div>")
     return "".join(parts)
 
@@ -270,18 +290,19 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         return [one_line(b.text) for b in p.blocks if b.kind == "table"] if p is not None else []
 
     rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>처리 시간</th><th>제목을 찾은 쪽</th>"
-            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>%s 결과와 일치율</th><th>비고</th></tr>" % esc(ref.key if ref else "-")]
+            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>%s 결과와 일치율</th><th>비고</th></tr>" % esc(ref.key if ref else "-")]
     table_diffs = []
     for m in run.methods:
         if m.error:
-            rows.append("<tr><td>%s</td><td colspan=\"7\" class=\"err\">%s</td></tr>" % (
+            rows.append("<tr><td>%s</td><td colspan=\"8\" class=\"err\">%s</td></tr>" % (
                 esc(m.label), esc(m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)))
             continue
         sims = [similarity(compare_key(page_text(_page(m, i))), compare_key(page_text(_page(ref, i)))) for i in range(n)] if ref else []
-        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%s</td><td>%s</td></tr>" % (
+        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%s</td><td>%s</td></tr>" % (
             esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
             sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
             sum(len(table_texts(p)) for p in m.pages),
+            sum(1 for p in m.pages for b in p.blocks if b.kind == "table" and b.flat_mode == "keyvalue"),
             "기준" if m is ref else ("%.1f%%" % (100 * sum(sims) / len(sims)) if sims else "-"), esc(m.note)))
         if ref is not None and m is not ref:
             pages = [i + 1 for i in range(n) if table_texts(_page(m, i)) != table_texts(_page(ref, i))]
@@ -293,7 +314,10 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
             rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: %s</p>" % (esc(ref.key), esc(m.label), links))
         else:
             rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: 없음</p>" % (esc(ref.key), esc(m.label)))
-    rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄과 '표' 꼬리표가 붙습니다. 일치율은 표의 칸 구분을 세지 않으므로, "
+    rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄이 붙고, 같은 표를 두 가지 모양으로 보여 줍니다. "
+                "<b>칸 구분</b>은 칸을 | 로 이은 기존 모양이고, <b>풀어 쓰기</b>는 값마다 행 머리글과 열 머리글을 붙인 모양입니다. "
+                "머리글이 분명하지 않은 표는 풀어 쓰지 않고 이유를 적습니다. 위쪽 '표:' 체크로 한쪽만 볼 수 있습니다.</p>")
+    rows.append("<p class=\"legend\">일치율은 칸 구분 모양의 글로 계산하고 표의 칸 구분은 세지 않으므로, "
                 "표 인식의 차이는 위의 '다른 쪽' 목록과 '찾은 표' 수로 확인하세요.</p>")
     rows.append("<p class=\"legend\">Before 열의 번호는 라이브러리가 따로 꺼내 준 단위입니다. 같은 번호 안의 줄은 한 덩어리로 나온 것이고, "
                 "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서이고, 배치 그림의 회색 상자가 그 단위의 위치입니다.</p>")
@@ -421,6 +445,9 @@ def write_json(run: DocRun, out_path: str) -> None:
             m.key: {
                 "label": m.label, "seconds": round(m.seconds, 3), "error": m.error,
                 "pages": [{"page": p.number, "title": p.title, "title_reason": p.title_reason, "body": p.body,
+                           "body_flat": p.body_flat,
+                           "tables": [{"mode": b.flat_mode, "reason": b.flat_reason, "text": b.text, "flat": b.flat,
+                                       **(b.table or {})} for b in p.blocks if b.kind == "table"],
                            "removed": [{"text": t, "reason": r} for t, r in p.removed]} for p in m.pages],
             } for m in run.methods
         },

@@ -376,12 +376,17 @@ class _SlideReader:
     def table_block(self, shape) -> Optional[Block]:
         block = Block(kind="table")
         sizes = []
-        for row in shape.table.rows:
+        spans = []                                 # (행, 열, 세로로 합친 수, 가로로 합친 수)
+        for ri, row in enumerate(shape.table.rows):
             out = []
-            for cell in row.cells:
+            for ci, cell in enumerate(row.cells):
                 if cell.is_spanned:
                     out.append("")
                     continue
+                if cell.is_merge_origin:
+                    spans.append((ri, ci, cell.span_height, cell.span_width))
+                else:
+                    spans.append((ri, ci, 1, 1))
                 parts = [strip_bullet(clean(p.text.replace("\v", " "))) for p in cell.text_frame.paragraphs]
                 out.append(" ".join(t for t in parts if t))
                 for p in cell.text_frame.paragraphs:
@@ -393,6 +398,7 @@ class _SlideReader:
         if not any(any(c for c in r) for r in block.rows):
             return None
         block.size = max(sizes) if sizes else 14.0
+        block.cell_spans = spans                   # type: ignore[attr-defined]
         return block
 
     def chart_block(self, shape) -> Optional[Block]:

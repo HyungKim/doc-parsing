@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from . import tables
 from .layout import analyze_wrap, estimate_right_edges, render_block, xy_order
 from .model import Block, Document, OutBlock, PageOut
 from .repeat import mark_repeats
@@ -89,6 +90,18 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
         if order_log is not None:
             order_log.append((page.number, flat, body))
         ordered = xy_order(flat, body) + sorted(turned, key=lambda b: (b.y0, b.x0))
-        out.blocks = [OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind) for b in ordered]
+        for b in ordered:
+            ob = OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind)
+            if b.kind == "table":
+                try:
+                    info = tables.describe(b)
+                except Exception:                  # 표 풀어 쓰기가 실패해도 기존 결과는 그대로 낸다
+                    info = None
+                if info is not None:
+                    flat = info["flat"]
+                    ob.flat, ob.flat_mode, ob.flat_reason = flat.text, flat.mode, flat.reason
+                    ob.table = {"rows": info["rows"], "cols": info["cols"], "cells": info["cells"],
+                                "head_rows": flat.head_rows, "label_cols": flat.label_cols}
+            out.blocks.append(ob)
         outs.append(out)
     return outs

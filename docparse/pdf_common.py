@@ -321,6 +321,7 @@ def split_tables(chars: List[Ch], tables: List[dict]):
             continue
         b = Block(kind="table")
         b.x0, b.y0, b.x1, b.y1 = t["bbox"]
+        b.cell_boxes = t["cells"]                  # type: ignore[attr-defined]  합친 칸을 알아내는 데 쓴다(tables.py)
         b.cell_lines = []                          # type: ignore[attr-defined]
         b.cell_right = []                          # type: ignore[attr-defined]
         sizes = []

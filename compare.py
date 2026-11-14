@@ -27,7 +27,7 @@ from docparse import report
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "2.2"
+VERSION = "2.3"
 
 
 def log(msg: str) -> None:

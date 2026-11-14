@@ -80,6 +80,11 @@ class OutBlock:
     text: str
     box: Tuple[float, float, float, float]   # 0~1 로 정규화한 x0, y0, x1, y1
     kind: str = "text"
+    # 표일 때만: 같은 표를 '행마다 머리글을 붙여 풀어 쓴' 모양과 칸 구조 (tables.py)
+    flat: str = ""
+    flat_mode: str = ""                      # keyvalue: 풀어 씀 | pipe: 머리글이 분명하지 않아 칸 구분으로 둠
+    flat_reason: str = ""
+    table: Optional[dict] = None             # {"rows", "cols", "cells": [(r, c, rowspan, colspan, text)]}
 
 
 @dataclass
@@ -94,6 +99,11 @@ class PageOut:
     @property
     def body(self) -> str:
         return "\n".join(b.text for b in self.blocks)
+
+    @property
+    def body_flat(self) -> str:
+        """본문에서 표만 풀어 쓴 모양으로 바꾼 것."""
+        return "\n".join(b.flat if (b.kind == "table" and b.flat) else b.text for b in self.blocks)
 
 
 @dataclass
