@@ -23,9 +23,11 @@ MARKER_GAP = 3.0      # 글머리 기호/번호 뒤의 간격은 이만큼까지
 
 
 class Ch:
-    __slots__ = ("c", "x0", "y0", "x1", "y1", "ox", "oy", "size", "font", "bold", "angle")
+    __slots__ = ("c", "x0", "y0", "x1", "y1", "ox", "oy", "size", "font", "bold", "angle", "color", "over")
 
-    def __init__(self, c, x0, y0, x1, y1, ox, oy, size, font, bold, angle):
+    def __init__(self, c, x0, y0, x1, y1, ox, oy, size, font, bold, angle, color=None):
+        self.color = color    # 글자색(같은지 비교하는 용도). 모르면 None
+        self.over = False     # 표 위에 따로 얹힌 글로 보고 표에서 떼어 낸 글자
         self.c = c
         self.x0 = x0
         self.y0 = y0
@@ -103,6 +105,7 @@ def _segment_to_line(seg: List[Ch]) -> Optional[Line]:
         trailing_space=trailing,
         first_word_w=max(0.0, last_of_word.x1 - first.x0),
         first_char_w=max(0.0, first.x1 - first.x0),
+        overlay=any(c.over for c in seg),
     )
 
 
@@ -275,6 +278,111 @@ def group_blocks(lines: List[Line]) -> List[Block]:
     return blocks
 
 
+TIGHT_GAP = 0.6       # 저장된 순서로 이어진 두 글자의 간격이 글자 크기의 이 비율 이하면 한 번에 찍은 글로 본다
+
+
+def _same_run(p: Ch, c: Ch) -> bool:
+    """c가 p 바로 뒤에, 같은 줄에서 빈틈 없이 이어 찍힌 글자인가."""
+    if abs(p.angle) >= 3.0 or abs(c.angle) >= 3.0:
+        return False
+    if abs(c.oy - p.oy) > max(1.0, 0.25 * min(p.size, c.size)):
+        return False
+    big = max(p.size, c.size, 1.0)
+    return -0.5 * big <= c.x0 - p.x1 <= TIGHT_GAP * big
+
+
+def find_overlays(chars: List[Ch], home: list, tables: List[dict]) -> set:
+    """표 칸에 들어간 글자 가운데 표의 글이 아니라 표 위에 따로 얹힌 글(코멘트 글상자 등)을 찾는다.
+
+    PDF에는 '이 글자는 표의 것'이라는 표시가 없어서, 좌표만 보면 표 위에 얹은 글도 그 자리 칸의 글이 된다.
+    그러면 코멘트가 칸 경계에서 잘려 칸마다 원래 글 뒤에 붙는다. 가려내는 단서는 두 가지다.
+
+      저장 순서  표는 자기 글을 첫 칸부터 마지막 칸까지 차례로 한 번에 저장한다. 그 앞이나 뒤에
+                 이미 지나간 칸 자리로 되돌아와 저장된 글은 다른 도형의 글이다.
+      칸 경계    표의 글은 칸 안에 머문다. 빈틈 없이 이어진 글이 칸 경계나 표 가장자리를 넘으면 표의 글이 아니다.
+
+    순서가 어긋난 글이라도 증거가 있을 때만 떼어 낸다. 증거는 (가) 경계를 넘었거나,
+    (나) 표의 글이 이미 있는 칸에 그 글과 다른 색이나 크기로 덧찍힌 경우다.
+    칸 순서대로 저장하지 않는 PDF에서는 순서로 판단하지 않으므로 이전과 같은 결과가 나온다.
+
+    home[i]는 글자 i가 들어갈 (표 번호, 행, 열) 또는 None. 반환: 떼어 낼 글자의 순번 집합.
+    """
+    lifted: set = set()
+    n = len(chars)
+    run_of = [0] * n                               # 글자 → 한 번에 이어 찍힌 묶음 번호
+    runs: List[List[int]] = []
+    for i in range(n):
+        if i and _same_run(chars[i - 1], chars[i]):
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+        run_of[i] = len(runs) - 1
+
+    for ti, t in enumerate(tables):
+        idx = [i for i in range(n) if home[i] is not None and home[i][0] == ti]
+        if not idx:
+            continue
+        x0, y0, x1, y1 = t["bbox"]
+
+        def outside(i: int) -> bool:
+            c = chars[i]
+            if c.c.isspace():
+                return False
+            cx, cy = (c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2
+            return not (x0 <= cx <= x1 and y0 <= cy <= y1)
+
+        def style(i: int):
+            return (chars[i].color, round(chars[i].size, 1))
+
+        # 1) 표 가장자리를 넘는 글: 한 번에 찍힌 글의 일부는 표 안, 일부는 표 밖에 있다
+        crosses = {}
+        for i in idx:
+            r = run_of[i]
+            if r not in crosses:
+                crosses[r] = any(outside(j) for j in runs[r])
+            if crosses[r]:
+                lifted.add(i)
+
+        # 2) 저장 순서로 구간을 나눈다. 칸 순서가 뒤로 돌아가거나 표 밖 글자가 끼어들면 새 구간이다
+        segs: List[List[int]] = []
+        last_key, last_i = None, -1
+        for i in idx:
+            key = home[i][1:]
+            if last_key is None or key < last_key or any(outside(j) for j in range(last_i + 1, i)):
+                segs.append([])
+            segs[-1].append(i)
+            last_key, last_i = key, i
+        if len(segs) < 2:
+            continue
+        seg_cells = [{home[i][1:] for i in seg} for seg in segs]
+        main = max(range(len(segs)), key=lambda k: (len(seg_cells[k]), len(segs[k])))    # 칸을 가장 많이 거친 구간 = 표 자신의 글
+        if len(seg_cells[main]) * 2 < len(set().union(*seg_cells)):
+            continue                               # 칸 순서대로 저장된 표가 아니다. 순서로는 판단하지 않는다
+        own = {}                                   # 칸 → 표 자신의 글이 쓴 글자 모양(색, 크기)
+        for i in segs[main]:
+            if i not in lifted:
+                own.setdefault(home[i][1:], set()).add(style(i))
+        for k, seg in enumerate(segs):
+            if k == main:
+                continue
+            by_run = {}
+            for i in seg:
+                by_run.setdefault(run_of[i], []).append(i)
+            proof = False
+            for members in by_run.values():
+                cells = {home[i][1:] for i in members}
+                if len(cells) >= 2 or any(i in lifted for i in members):
+                    proof = True                   # (가) 칸 경계나 표 가장자리를 넘었다
+                    break
+                cell = next(iter(cells))
+                if cell in own and not ({style(i) for i in members} & own[cell]):
+                    proof = True                   # (나) 표의 글이 있는 칸에 다른 모양의 글자로 덧찍혔다
+                    break
+            if proof:
+                lifted.update(seg)
+    return lifted
+
+
 def split_tables(chars: List[Ch], tables: List[dict]):
     """표 칸 안의 글자를 따로 떼어 표 블록을 만든다.
 
@@ -292,8 +400,8 @@ def split_tables(chars: List[Ch], tables: List[dict]):
 
     rest: List[Ch] = []
     buckets = [dict() for _ in valid]
-    for c in chars:
-        placed = False
+    home: list = [None] * len(chars)               # 글자마다 들어갈 (표 번호, 행, 열)
+    for i, c in enumerate(chars):
         if abs(c.angle) < 3.0:
             cx, cy = (c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2
             for ti, t in enumerate(valid):
@@ -303,22 +411,28 @@ def split_tables(chars: List[Ch], tables: List[dict]):
                 for ri, row in enumerate(t["cells"]):
                     for ci, cell in enumerate(row):
                         if cell and cell[0] <= cx <= cell[2] and cell[1] <= cy <= cell[3]:
-                            buckets[ti].setdefault((ri, ci), []).append(c)
-                            placed = True
+                            home[i] = (ti, ri, ci)
                             break
-                    if placed:
+                    if home[i] is not None:
                         break
                 break
-        if not placed:
+    lifted = find_overlays(chars, home, valid)     # 표 위에 얹힌 글은 칸에 넣지 않고 보통 글로 돌려보낸다
+    for i, c in enumerate(chars):
+        if home[i] is None or i in lifted:
             rest.append(c)
+        else:
+            buckets[home[i][0]].setdefault(home[i][1:], []).append(c)
 
     blocks: List[Block] = []
-    for t, bucket in zip(valid, buckets):
+    for ti, (t, bucket) in enumerate(zip(valid, buckets)):
         total = sum(1 for row in t["cells"] for cell in row if cell)
         if total == 0 or len(bucket) < max(2, 0.4 * total):
             for cs in bucket.values():             # 표로 보기 어려우면 일반 글자로 되돌린다
                 rest.extend(cs)
             continue
+        for i in lifted:                           # 표로 남은 경우에만 '표 위에 얹힌 글'로 표시한다
+            if home[i][0] == ti:
+                chars[i].over = True
         b = Block(kind="table")
         b.x0, b.y0, b.x1, b.y1 = t["bbox"]
         b.cell_boxes = t["cells"]                  # type: ignore[attr-defined]  합친 칸을 알아내는 데 쓴다(tables.py)

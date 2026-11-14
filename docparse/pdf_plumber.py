@@ -59,6 +59,18 @@ def _font_size(c: dict, m) -> float:
     return min(w, h) or flat
 
 
+def _color(value):
+    """글자색을 서로 같은지 비교할 수 있는 값으로 바꾼다. 색 공간에 따라 숫자가 1개(회색), 3개(RGB), 4개(CMYK)로 온다."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (list, tuple)):
+            return tuple(round(float(v), 3) for v in value)
+        return (round(float(value), 3),)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def read(path: str) -> Document:
     doc = Document(path=str(path), kind="pdf")
     with pdfplumber.open(str(path)) as pdf:
@@ -100,7 +112,7 @@ def read(path: str) -> Document:
                 if upright and not (y0 - size <= oy <= y1 + size):
                     oy = y1                                    # 기준점이 어긋난 PDF 대비
                 chars.append(Ch(c.get("text", ""), x0, y0, x1, y1, ox, oy, size, font,
-                                bool(BOLD_FONT.search(font)), angle))
+                                bool(BOLD_FONT.search(font)), angle, _color(c.get("non_stroking_color"))))
 
             tables = []
             try:

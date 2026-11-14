@@ -99,6 +99,8 @@ ol.blocks li.tbl{border-left:3px solid var(--box);padding-left:8px;background:rg
 ol.blocks ol.flat{margin:4px 0 0;padding-left:26px}
 ol.blocks ol.flat li{margin:0 0 4px;padding-left:2px}
 ol.blocks ol.flat li::marker{color:var(--tt-ink);font-weight:700;font-size:12px}
+ol.blocks li.ovr{border-left:3px solid #a15c00;padding-left:8px;background:rgba(161,92,0,.07);border-radius:0 4px 4px 0}
+.otag{display:inline-block;padding:0 6px;border-radius:3px;background:#a15c00;color:#fff;font-size:11px;font-weight:700}
 body.nopipe .tv-pipe{display:none}
 body.noflat .tv-flat{display:none}
 .rm{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px;font-size:13px;color:var(--rm-ink)}
@@ -211,7 +213,10 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
     parts.append("<ol class=\"blocks\">")
     for b in p.blocks:
         if b.kind != "table":
-            parts.append("<li><div class=\"txt\">%s</div></li>" % mark(b.text))
+            if b.over_table:
+                parts.append("<li class=\"ovr\"><span class=\"otag\">표 위에 얹힌 글</span><div class=\"txt\">%s</div></li>" % mark(b.text))
+            else:
+                parts.append("<li><div class=\"txt\">%s</div></li>" % mark(b.text))
             continue
         inner = "<div class=\"tv tv-pipe\"><span class=\"tag\">표 · 칸 구분</span><div class=\"txt\">%s</div></div>" % mark(b.text)
         if b.flat:
@@ -292,24 +297,33 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
     n = run.page_count
 
     rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>처리 시간</th><th>제목을 찾은 쪽</th>"
-            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>비고</th></tr>"]
+            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>표에서 떼어 낸 글</th><th>비고</th></tr>"]
     for m in run.methods:
         if m.error:
-            rows.append("<tr><td>%s</td><td colspan=\"7\" class=\"err\">%s</td></tr>" % (
+            rows.append("<tr><td>%s</td><td colspan=\"8\" class=\"err\">%s</td></tr>" % (
                 esc(m.label), esc(m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)))
             continue
         tables = [b for p in m.pages for b in p.blocks if b.kind == "table"]
         rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td>"
-                    "<td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td>%s</td></tr>" % (
+                    "<td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td>%s</td></tr>" % (
                         esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
                         sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
-                        len(tables), sum(1 for b in tables if b.flat_mode == "keyvalue"), esc(m.note)))
+                        len(tables), sum(1 for b in tables if b.flat_mode == "keyvalue"),
+                        sum(1 for p in m.pages for b in p.blocks if b.over_table), esc(m.note)))
     rows.append("</table></div>")
     with_tables = [p.number for p in (ref.pages if ref else []) if any(b.kind == "table" for b in p.blocks)]
     if with_tables:
         links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in with_tables[:80])
         rows.append("<p class=\"legend\"><b>표가 있는 쪽</b>: %s%s</p>" % (
             links, " 외 %d쪽" % (len(with_tables) - 80) if len(with_tables) > 80 else ""))
+    lifted_pages = [p.number for p in (ref.pages if ref else []) if any(b.over_table for b in p.blocks)]
+    if lifted_pages:
+        links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in lifted_pages[:80])
+        rows.append("<p class=\"legend\"><b>표 위에 얹힌 글을 떼어 낸 쪽</b>: %s%s</p>" % (
+            links, " 외 %d쪽" % (len(lifted_pages) - 80) if len(lifted_pages) > 80 else ""))
+        rows.append("<p class=\"legend\"><span class=\"otag\">표 위에 얹힌 글</span> 은 PDF에서 표 영역 안에 있지만 표의 글이 아니라 "
+                    "그 위에 따로 올려 둔 글(코멘트 글상자 등)로 판단해 표에서 떼어 낸 덩어리입니다. 표의 칸에 넣지 않고 표 다음에 따로 적습니다. "
+                    "표의 글인데 잘못 떼어 냈거나, 코멘트인데 칸에 섞여 남은 것이 있으면 그 쪽 번호를 알려 주세요.</p>")
     rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄이 붙고, 같은 표를 두 가지 모양으로 보여 줍니다. "
                 "<b>칸 구분</b>은 칸을 | 로 이은 모양이고, <b>풀어 쓰기</b>는 값마다 행 머리글과 열 머리글을 붙인 모양입니다. "
                 "풀어 쓴 표는 표의 한 행이 한 문장이 되고, 문장마다 초록 번호가 붙습니다(번호는 구분용 표시이고 뽑은 글에는 들어가지 않습니다). "
@@ -434,6 +448,7 @@ def write_json(run: DocRun, out_path: str) -> None:
                            "tables": [{"mode": b.flat_mode, "reason": b.flat_reason, "text": b.text, "flat": b.flat,
                                        "flat_lines": b.flat_lines,
                                        **(b.table or {})} for b in p.blocks if b.kind == "table"],
+                           "over_table": [b.text for b in p.blocks if b.over_table],
                            "removed": [{"text": t, "reason": r} for t, r in p.removed]} for p in m.pages],
             } for m in run.methods
         },

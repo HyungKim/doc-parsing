@@ -92,6 +92,7 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
         ordered = xy_order(flat, body) + sorted(turned, key=lambda b: (b.y0, b.x0))
         for b in ordered:
             ob = OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind)
+            ob.over_table = b.kind == "text" and any(l.overlay for l in b.lines)
             if b.kind == "table":
                 try:
                     info = tables.describe(b)
