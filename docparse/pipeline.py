@@ -15,7 +15,19 @@ def body_font_size(doc: Document) -> float:
     weighted = []
     for page in doc.pages:
         for b in page.blocks:
-            if b.kind != "text" or b.role == "removed":
+            if b.role == "removed":
+                continue
+            if b.kind == "table":
+                # 표 안의 글도 본문이다. 빼면 표가 대부분인 문서에서 제목 글자가 본문 크기로 잡혀 제목을 못 찾는다.
+                cells = getattr(b, "cell_lines", None)
+                if cells is not None:
+                    chars = sum(len(l.text) for row in cells for cell in row for l in cell)
+                else:
+                    chars = sum(len(c) for row in b.rows for c in row)
+                if b.size > 0 and chars:
+                    weighted.append((b.size, chars))
+                continue
+            if b.kind != "text":
                 continue
             for l in b.lines:
                 if l.size > 0 and not l.removed:

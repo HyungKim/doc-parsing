@@ -13,23 +13,36 @@ except ImportError:                                # 구버전은 fitz 라는 �
     import fitz as pymupdf  # type: ignore
 
 # PyMuPDF는 2.0부터 표 찾기(find_tables)에 내장 모델(onnxruntime)을 쓴다.
-# 이 프로그램은 좌표 규칙만 쓰기로 했으므로 모델을 끄고, 그려진 선을 따라 표를 찾게 한다.
-# 샘플에서는 결과가 같고 약 10배 빠르다. 1.x에는 이 스위치도 모델도 없어 아무 일도 하지 않는다.
+# 이 프로그램은 좌표 규칙만 쓰기로 했으므로 평소에는 모델을 끄고, 그려진 선을 따라 표를 찾게 한다.
+# 선이 온전한 표에서는 결과가 같고 약 10배 빠르다. 다만 모델은 선이 없는 표도 찾아낸다.
+# 그 차이를 실제 자료로 비교할 수 있도록 read(use_model=True)로 모델을 켠 결과도 얻을 수 있게 했다.
+# 1.x에는 이 스위치도 모델도 없다.
 MODEL_INSTALLED = False
 try:
     _available = getattr(pymupdf, "_layout_available", None)
     MODEL_INSTALLED = bool(callable(_available) and _available())
     if hasattr(pymupdf, "_layout_enabled"):
         pymupdf._layout_enabled = False
+    _quiet = getattr(pymupdf, "no_recommend_layout", None)
+    if callable(_quiet):
+        _quiet()                                   # 모델 패키지를 권하는 PyMuPDF의 안내문은 띄우지 않는다
 except Exception:
     pass
 
 
+MODEL_MISSING = "PyMuPDF 내장 모델이 설치되어 있지 않아 건너뜀 (PyMuPDF 2.0 이상, Python 3.11 이상에서 함께 설치됨)"
+
+
 def table_mode() -> str:
     """표를 어떻게 찾는지 리포트에 적을 말."""
-    if MODEL_INSTALLED and getattr(pymupdf, "_layout_enabled", False):
-        return "내장 모델 사용"
-    return "선 규칙만 사용 (내장 모델은 %s)" % ("설치되어 있지만 끔" if MODEL_INSTALLED else "없음")
+    if MODEL_INSTALLED:
+        return "기본은 선 규칙, 내장 모델은 비교용 열에서만 사용"
+    return "선 규칙만 사용 (내장 모델 없음)"
+
+
+def _set_model(on: bool) -> None:
+    if hasattr(pymupdf, "_layout_enabled"):
+        pymupdf._layout_enabled = bool(on)
 
 
 def _flags() -> int:
@@ -61,7 +74,18 @@ def page_count(path: str) -> int:
     return n
 
 
-def read(path: str) -> Document:
+def read(path: str, use_model: bool = False) -> Document:
+    """use_model=True 이면 표를 찾을 때 PyMuPDF 내장 모델을 쓴다(비교용). 끝나면 다시 끈다."""
+    if use_model and not MODEL_INSTALLED:
+        raise RuntimeError(MODEL_MISSING)
+    _set_model(use_model)
+    try:
+        return _read(path)
+    finally:
+        _set_model(False)
+
+
+def _read(path: str) -> Document:
     doc = Document(path=str(path), kind="pdf")
     pdf = pymupdf.open(str(path))
     doc.info["producer"] = (pdf.metadata or {}).get("producer", "")

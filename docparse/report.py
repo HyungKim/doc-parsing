@@ -91,6 +91,9 @@ pre,.txt{white-space:pre-wrap;word-break:break-word;margin:0;font:inherit}
 ol.blocks{margin:6px 0 0;padding-left:26px}
 ol.blocks li{margin:0 0 6px;padding-left:2px}
 ol.blocks li::marker{color:var(--box);font-weight:700;font-size:12px}
+ol.blocks li.tbl{border-left:3px solid var(--box);padding-left:8px;background:rgba(31,95,191,.05);border-radius:0 4px 4px 0}
+ol.blocks li.tbl .txt::before{content:"표";display:inline-block;margin-right:6px;padding:0 5px;border-radius:3px;
+background:var(--box);color:var(--card);font-size:11px;font-weight:700;vertical-align:1px}
 .rm{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px;font-size:13px;color:var(--rm-ink)}
 .rm div{margin:1px 0}
 .rm s{text-decoration-thickness:1px}
@@ -169,7 +172,8 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
     head = "<article class=\"col after\" data-col=\"%s\"><h3><span>%s</span><span class=\"badge\">%s</span></h3>" % (
         esc(col_id or m.key), esc(heading or m.label), badge)
     if m.error:
-        return head + "<div class=\"err\">실행하지 못했습니다: %s</div></article>" % esc(m.error)
+        return head + "<div class=\"err\">%s</div></article>" % esc(
+            m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)
     if p is None:
         return head + "<div class=\"sub\">이 쪽의 결과가 없습니다.</div></article>"
 
@@ -190,9 +194,12 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
         parts.append("<div class=\"ttl\"><b>제목</b> %s<small>%s</small></div>" % (mark(p.title), esc(p.title_reason)))
     else:
         parts.append("<div class=\"ttl none\">제목 없음</div>")
+    tables = sum(1 for b in p.blocks if b.kind == "table")
+    if tables:
+        parts.append("<div class=\"unit\">이 쪽에서 표로 인식한 덩어리 %d개</div>" % tables)
     parts.append("<ol class=\"blocks\">")
     for b in p.blocks:
-        parts.append("<li><div class=\"txt\">%s</div></li>" % mark(b.text))
+        parts.append("<li%s><div class=\"txt\">%s</div></li>" % (" class=\"tbl\"" if b.kind == "table" else "", mark(b.text)))
     parts.append("</ol>")
     if p.removed:
         parts.append("<div class=\"rm\"><b>제거한 문구</b>")
@@ -259,18 +266,35 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
     ref = next((m for m in run.methods if m.pages and not m.error), None)
     n = run.page_count
 
+    def table_texts(p: Optional[PageOut]) -> List[str]:
+        return [one_line(b.text) for b in p.blocks if b.kind == "table"] if p is not None else []
+
     rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>처리 시간</th><th>제목을 찾은 쪽</th>"
-            "<th>제거한 문구</th><th>본문 글자 수</th><th>%s 결과와 일치율</th><th>비고</th></tr>" % esc(ref.key if ref else "-")]
+            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>%s 결과와 일치율</th><th>비고</th></tr>" % esc(ref.key if ref else "-")]
+    table_diffs = []
     for m in run.methods:
         if m.error:
-            rows.append("<tr><td>%s</td><td colspan=\"6\" class=\"err\">실행하지 못했습니다: %s</td></tr>" % (esc(m.label), esc(m.error)))
+            rows.append("<tr><td>%s</td><td colspan=\"7\" class=\"err\">%s</td></tr>" % (
+                esc(m.label), esc(m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)))
             continue
         sims = [similarity(compare_key(page_text(_page(m, i))), compare_key(page_text(_page(ref, i)))) for i in range(n)] if ref else []
-        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%s</td><td>%s</td></tr>" % (
+        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%s</td><td>%s</td></tr>" % (
             esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
             sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
+            sum(len(table_texts(p)) for p in m.pages),
             "기준" if m is ref else ("%.1f%%" % (100 * sum(sims) / len(sims)) if sims else "-"), esc(m.note)))
+        if ref is not None and m is not ref:
+            pages = [i + 1 for i in range(n) if table_texts(_page(m, i)) != table_texts(_page(ref, i))]
+            table_diffs.append((m, pages))
     rows.append("</table></div>")
+    for m, pages in table_diffs:
+        if pages:
+            links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in pages[:80]) + (" 외 %d쪽" % (len(pages) - 80) if len(pages) > 80 else "")
+            rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: %s</p>" % (esc(ref.key), esc(m.label), links))
+        else:
+            rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: 없음</p>" % (esc(ref.key), esc(m.label)))
+    rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄과 '표' 꼬리표가 붙습니다. 일치율은 표의 칸 구분을 세지 않으므로, "
+                "표 인식의 차이는 위의 '다른 쪽' 목록과 '찾은 표' 수로 확인하세요.</p>")
     rows.append("<p class=\"legend\">Before 열의 번호는 라이브러리가 따로 꺼내 준 단위입니다. 같은 번호 안의 줄은 한 덩어리로 나온 것이고, "
                 "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서이고, 배치 그림의 회색 상자가 그 단위의 위치입니다.</p>")
     rows.append("<p class=\"legend\">Before 열 표시: <span style=\"background:var(--rm-bg);color:var(--rm-ink)\">빨강 취소선</span> = %s 방식이 제거한 문구, "

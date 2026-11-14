@@ -27,7 +27,7 @@ from docparse import report
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "2.1"
+VERSION = "2.2"
 
 
 def log(msg: str) -> None:
@@ -38,7 +38,7 @@ def environment_note() -> str:
     """어떤 라이브러리 버전으로 돌렸는지. 결과가 PC마다 다를 때 원인을 찾는 데 쓴다.
 
     PyMuPDF는 2.0부터 표 찾기(find_tables)에 자체 내장 모델(onnxruntime)을 쓰는데,
-    이 프로그램은 그 모델을 끄고 선을 따라 찾는 규칙만 쓴다(docparse/pdf_pymupdf.py).
+    이 프로그램은 그 모델을 끄고 선을 따라 찾는 규칙을 쓴다. 모델을 켠 결과는 비교용 열로만 보여 준다.
     """
     from importlib import metadata
 
@@ -83,6 +83,7 @@ class Options:
             if words:
                 self.rules["extra_keywords"] = re.compile("|".join(re.escape(w) for w in words), re.I)
         self.plumber = not args.no_pdfplumber
+        self.model_compare = not args.no_pymupdf_model
 
 
 def run_pdf(path: Path, opts: Options) -> report.DocRun:
@@ -103,6 +104,16 @@ def run_pdf(path: Path, opts: Options) -> report.DocRun:
         run.aspect = doc.pages[0].width / max(doc.pages[0].height, 1.0)
         if doc.info.get("producer"):
             run.notes.append("PDF를 만든 프로그램: %s" % doc.info["producer"])
+
+    if opts.model_compare:
+        # 같은 규칙을 적용하되 표만 PyMuPDF 내장 모델로 찾은 결과. 선 규칙(A-mu)과 나란히 비교하는 용도다.
+        m = MethodResult("A-mu-model", "A · 좌표 규칙 (PyMuPDF + 내장 모델)")
+        if pdf_pymupdf.MODEL_INSTALLED:
+            m.note = "표를 PyMuPDF 내장 모델로 찾음 (비교용)"
+            timed(m, lambda: apply_rules(pdf_pymupdf.read(str(path), use_model=True), **opts.rules))
+        else:
+            m.error = pdf_pymupdf.MODEL_MISSING
+        run.methods.append(m)
 
     if opts.plumber:
         def a_plumber():
@@ -171,6 +182,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("inputs", nargs="+", help="PDF/PPTX 파일 또는 폴더")
     ap.add_argument("-o", "--out", default="out", help="리포트를 저장할 폴더 (기본: out)")
     ap.add_argument("--no-pdfplumber", action="store_true", help="pdfplumber 비교를 생략")
+    ap.add_argument("--no-pymupdf-model", action="store_true", help="PyMuPDF 내장 모델로 표를 찾은 비교용 열을 생략")
     ap.add_argument("--no-images", action="store_true", help="리포트에 페이지 그림을 넣지 않음")
     ap.add_argument("--include-hidden", action="store_true", help="PPTX의 숨긴 슬라이드도 포함")
     ap.add_argument("--repeat-ratio", type=float, default=0.6, help="본문 영역의 글을 반복 문구로 볼 페이지 비율 (기본 0.6)")
@@ -215,7 +227,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         for m in run.methods:
             state = "%.2f초" % m.seconds
             if m.error:
-                state = "실패: " + m.error
+                state = m.error if "건너뜀" in m.error else "실패: " + m.error
             log("  %-28s %s" % (m.label, state))
         name = "%s.%s.html" % (f.stem, run.kind)
         report.write_doc_report(run, str(out_dir / name))
