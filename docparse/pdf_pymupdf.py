@@ -12,6 +12,25 @@ try:
 except ImportError:                                # 구버전은 fitz 라는 이름을 쓴다
     import fitz as pymupdf  # type: ignore
 
+# PyMuPDF는 2.0부터 표 찾기(find_tables)에 내장 모델(onnxruntime)을 쓴다.
+# 이 프로그램은 좌표 규칙만 쓰기로 했으므로 모델을 끄고, 그려진 선을 따라 표를 찾게 한다.
+# 샘플에서는 결과가 같고 약 10배 빠르다. 1.x에는 이 스위치도 모델도 없어 아무 일도 하지 않는다.
+MODEL_INSTALLED = False
+try:
+    _available = getattr(pymupdf, "_layout_available", None)
+    MODEL_INSTALLED = bool(callable(_available) and _available())
+    if hasattr(pymupdf, "_layout_enabled"):
+        pymupdf._layout_enabled = False
+except Exception:
+    pass
+
+
+def table_mode() -> str:
+    """표를 어떻게 찾는지 리포트에 적을 말."""
+    if MODEL_INSTALLED and getattr(pymupdf, "_layout_enabled", False):
+        return "내장 모델 사용"
+    return "선 규칙만 사용 (내장 모델은 %s)" % ("설치되어 있지만 끔" if MODEL_INSTALLED else "없음")
+
 
 def _flags() -> int:
     base = getattr(pymupdf, "TEXTFLAGS_DICT", None)

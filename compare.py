@@ -27,7 +27,7 @@ from docparse import report
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "2.0"
+VERSION = "2.1"
 
 
 def log(msg: str) -> None:
@@ -37,8 +37,8 @@ def log(msg: str) -> None:
 def environment_note() -> str:
     """어떤 라이브러리 버전으로 돌렸는지. 결과가 PC마다 다를 때 원인을 찾는 데 쓴다.
 
-    PyMuPDF는 2.0부터 표 찾기(find_tables)에 자체 내장 모델(onnxruntime)을 쓴다.
-    구버전이거나 그 패키지가 없으면 선을 따라 찾는 규칙만 쓴다.
+    PyMuPDF는 2.0부터 표 찾기(find_tables)에 자체 내장 모델(onnxruntime)을 쓰는데,
+    이 프로그램은 그 모델을 끄고 선을 따라 찾는 규칙만 쓴다(docparse/pdf_pymupdf.py).
     """
     from importlib import metadata
 
@@ -50,9 +50,8 @@ def environment_note() -> str:
         except ImportError:
             import fitz as pymupdf  # type: ignore
         parts.append("PyMuPDF %s" % getattr(pymupdf, "__version__", getattr(pymupdf, "VersionBind", "?")))
-        available = getattr(pymupdf, "_layout_available", None)
-        uses_model = bool(callable(available) and available() and getattr(pymupdf, "_layout_enabled", False))
-        model = "PyMuPDF 표 찾기: %s" % ("내장 모델 사용" if uses_model else "선 규칙만 사용 (내장 모델 없음)")
+        from docparse import pdf_pymupdf
+        model = "PyMuPDF 표 찾기: %s" % pdf_pymupdf.table_mode()
     except Exception:
         parts.append("PyMuPDF 없음")
     for name in ("pdfplumber", "python-pptx"):
