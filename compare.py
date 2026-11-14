@@ -34,6 +34,35 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def environment_note() -> str:
+    """어떤 라이브러리 버전으로 돌렸는지. 결과가 PC마다 다를 때 원인을 찾는 데 쓴다.
+
+    PyMuPDF는 2.0부터 표 찾기(find_tables)에 자체 내장 모델(onnxruntime)을 쓴다.
+    구버전이거나 그 패키지가 없으면 선을 따라 찾는 규칙만 쓴다.
+    """
+    from importlib import metadata
+
+    parts = ["Python %s" % sys.version.split()[0]]
+    model = ""
+    try:
+        try:
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf  # type: ignore
+        parts.append("PyMuPDF %s" % getattr(pymupdf, "__version__", getattr(pymupdf, "VersionBind", "?")))
+        available = getattr(pymupdf, "_layout_available", None)
+        uses_model = bool(callable(available) and available() and getattr(pymupdf, "_layout_enabled", False))
+        model = "PyMuPDF 표 찾기: %s" % ("내장 모델 사용" if uses_model else "선 규칙만 사용 (내장 모델 없음)")
+    except Exception:
+        parts.append("PyMuPDF 없음")
+    for name in ("pdfplumber", "python-pptx"):
+        try:
+            parts.append("%s %s" % (name, metadata.version(name)))
+        except Exception:
+            parts.append("%s 없음" % name)
+    return " · ".join(parts) + (" · " + model if model else "")
+
+
 def timed(result: MethodResult, fn: Callable[[], list], extra_seconds: float = 0.0) -> MethodResult:
     t0 = time.time()
     try:
@@ -157,8 +186,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = Options(args)
 
+    env = environment_note()
     log("PDF/PPTX 텍스트 추출 %s (좌표 규칙 방식)" % VERSION)
-    footer = "프로그램 버전 %s · 좌표 규칙 방식" % VERSION
+    log(env)
+    footer = "프로그램 버전 %s · %s" % (VERSION, env)
 
     pdf_by_stem = {f.stem: f for f in files if f.suffix.lower() == ".pdf"}
     runs = {}
