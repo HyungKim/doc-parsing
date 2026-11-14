@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .model import Block, Line, Page
 from .textnorm import is_cjk
@@ -67,6 +67,7 @@ def _grid_order(blocks: List[Block], font_size: float):
 
     2줄짜리 격자는 '머리글 + 내용' 카드가 옆으로 늘어선 것으로 보고 세로 묶음 단위로 읽는다.
     3줄 이상이고 칸의 글이 짧으면 표처럼 가로 줄 단위로 읽는다.
+    반환: (읽는 순서, 가로 줄 단위로 읽었는가) 또는 격자가 아니면 None
     """
     rows = _bands(blocks, "y0", "y1", Y_MIN_GAP)
     cols = _bands(blocks, "x0", "x1", _min_x_gap(font_size))
@@ -92,7 +93,11 @@ def _grid_order(blocks: List[Block], font_size: float):
         order = [(r, c) for r in range(len(rows)) for c in range(len(cols))]
     else:                                              # 카드 묶음이나 글 단: 세로 묶음 단위로
         order = [(r, c) for c in range(len(cols)) for r in range(len(rows))]
-    return [cells[k] for k in order if k in cells]
+    return [cells[k] for k in order if k in cells], table_like
+
+
+def _extent(blocks: List[Block]) -> tuple:
+    return (min(b.x0 for b in blocks), min(b.y0 for b in blocks), max(b.x1 for b in blocks), max(b.y1 for b in blocks))
 
 
 def _pure(band: List[Block], lo: str, hi: str) -> bool:
@@ -104,8 +109,15 @@ def _pure(band: List[Block], lo: str, hi: str) -> bool:
     return True
 
 
-def xy_order(blocks: List[Block], font_size: float) -> List[Block]:
+def xy_order(blocks: List[Block], font_size: float, trace: Optional[list] = None, depth: int = 0) -> List[Block]:
     """재귀 X-Y cut. 가장 넓은 여백에서 둘로 나누고 각 조각에 같은 일을 반복한다.
+
+    trace에 목록을 주면 어떻게 나눴는지를 차례로 담아 준다(결과에는 영향이 없다. tune.py가 그림으로 보여 주는 데 쓴다).
+      {"kind": "cut", "axis": "x"|"y", "lo": 여백 시작, "hi": 여백 끝, ...}     그 여백에서 둘로 나눔
+      {"kind": "grid", "by_rows": 가로 줄 단위인가, ...}                         격자로 보고 한 번에 정함
+      {"kind": "rows", ...}                                                     자를 여백이 없어 줄 단위로 읽음
+    공통 항목: "box" 나눈 영역, "depth" 몇 번째 단계, "gap_x"·"gap_y" 그 영역에서 가장 넓은 좌우·위아래 여백,
+               "need_x" 좌우로 자르는 데 필요했던 여백
 
     어느 방향으로 자를지는 이렇게 정한다.
       1. 가로 줄로도 세로 단으로도 깔끔히 나뉘면 격자 → 격자 규칙(_grid_order)
@@ -122,7 +134,12 @@ def xy_order(blocks: List[Block], font_size: float) -> List[Block]:
     # 여백이 0이면 자를 곳이 없다(한쪽 조각이 비어 끝나지 않는다). 기준값을 0으로 두어도 안전하도록 따로 확인한다.
     ok_y = gap_y > 0 and gap_y >= Y_MIN_GAP
     ok_x = gap_x > 0 and gap_x >= min_x
+    note = None
+    if trace is not None:
+        note = {"box": _extent(blocks), "depth": depth, "gap_x": gap_x, "gap_y": gap_y, "need_x": min_x}
     if not ok_x and not ok_y:
+        if note is not None:
+            trace.append(dict(note, kind="rows"))
         return _row_major(blocks)
 
     axis = "y" if ok_y else "x"
@@ -132,14 +149,22 @@ def xy_order(blocks: List[Block], font_size: float) -> List[Block]:
         if rows_pure and cols_pure:
             grid = _grid_order(blocks, font_size)
             if grid is not None:
-                return grid
+                if note is not None:
+                    trace.append(dict(note, kind="grid", by_rows=grid[1]))
+                return grid[0]
         if rows_pure:
             axis = "y"                                 # 가로 줄이 깔끔하면 줄 단위로 먼저 떼어 낸다
         else:
             axis = "x" if gap_x > Y_PREFERENCE * gap_y else "y"
     if axis == "x":
-        return xy_order(by_x[:cut_x], font_size) + xy_order(by_x[cut_x:], font_size)
-    return xy_order(by_y[:cut_y], font_size) + xy_order(by_y[cut_y:], font_size)
+        first, second = by_x[:cut_x], by_x[cut_x:]
+        lo, hi = max(b.x1 for b in first), second[0].x0
+    else:
+        first, second = by_y[:cut_y], by_y[cut_y:]
+        lo, hi = max(b.y1 for b in first), second[0].y0
+    if note is not None:
+        trace.append(dict(note, kind="cut", axis=axis, lo=lo, hi=hi))
+    return xy_order(first, font_size, trace, depth + 1) + xy_order(second, font_size, trace, depth + 1)
 
 
 # ---------------------------------------------------------------- 문단 합치기

@@ -122,6 +122,11 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
     if tall and (len(set(tall)) == 1 or max(tall) <= max(H, h)):  # 맨 윗줄에서 같은 높이로 내려온 칸 = 행 머리글 열의 이름
         H = max(H, max(tall))
     H = max(H, h)
+    # 왼쪽 위 칸 아래의 열(행 머리글 열)에서 세로로 합친 칸이 시작하는 줄은 이미 본문이다.
+    # 옆으로 합친 머리글 아래에 하위 머리글 줄이 없는 표에서 첫 본문 줄이 머리글로 들어가는 것을 막는다.
+    starts = [r for r, c, rs, cs, _ in work if c < max(cs0, 1) and rs > 1 and r >= max(rs0, 1) and r + rs <= R]
+    if starts:
+        H = max(min(H, min(starts)), 1)
 
     # 3) 행 머리글이 차지한 열 수 L
     l = 1                                                         # 본문 왼쪽에 아래로 합친 칸이 이어지는 동안 + 한 열
