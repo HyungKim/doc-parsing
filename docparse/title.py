@@ -2,9 +2,8 @@
 
 우선순위
   1. 구조 정보: PPTX의 제목 개체 틀
-  2. 모델 분류: Docling이 제목/섹션 제목으로 분류한 블록 (결합 방식에서만)
-  3. 글꼴 규칙: 페이지 상단에서 본문보다 뚜렷이 큰 글자
-  4. 글꼴 규칙: 표지·간지처럼 페이지에서 압도적으로 큰 글자
+  2. 글꼴 규칙: 페이지 상단에서 본문보다 뚜렷이 큰 글자
+  3. 글꼴 규칙: 표지·간지처럼 페이지에서 압도적으로 큰 글자
 어느 것도 아니면 제목 없음으로 둔다(억지로 본문 첫 줄을 쓰지 않는다).
 """
 from __future__ import annotations
@@ -57,13 +56,6 @@ def pick_title(blocks: List[Block], page: Page, body_size: float) -> Tuple[Optio
     if top:
         biggest = max(b.size for b in top)
         font_pick = min((b for b in top if b.size >= 0.7 * biggest), key=lambda b: (b.y0, b.x0))
-
-    labeled = [b for b in cands if b.hint == "title_label"]
-    if labeled:
-        best = max(labeled, key=lambda b: (round(b.size, 1), -b.y0, -b.x0))
-        if font_pick is not None and font_pick is not best and font_pick.size >= BIGGER * best.size:
-            return font_pick, "글꼴 크기 (Docling 분류보다 큰 상단 글자)"
-        return best, "Docling 분류" if len(labeled) == 1 else "Docling 분류 + 글꼴 크기"
 
     if font_pick is not None:
         return font_pick, "글꼴 크기 (상단의 큰 글자)"

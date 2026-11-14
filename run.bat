@@ -35,14 +35,11 @@ set "COUNT=1"
 
 :run
 set "PYTHONUTF8=1"
-set "MODELS="
-if exist "docling_models\" set "MODELS=--docling-models docling_models"
-if exist "docling_models\" set "HF_HUB_OFFLINE=1"
 
 echo.
 echo 처리할 자료: %COUNT%개 (파일 또는 폴더)
 echo.
-".venv\Scripts\python.exe" compare.py %SRCS% -o out %MODELS%
+".venv\Scripts\python.exe" compare.py %SRCS% -o out
 if errorlevel 1 goto :runfail
 
 echo.

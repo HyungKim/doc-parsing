@@ -20,19 +20,10 @@ echo 사용할 Python:
 %PY% --version
 echo.
 
-echo [1/2] 기본 라이브러리를 내려받습니다...
+echo 라이브러리 설치 파일을 내려받습니다. PyMuPDF, pdfplumber, python-pptx
 %PY% -m pip download -r requirements.txt -d wheels
 if errorlevel 1 goto :fail
 
-echo.
-echo [2/2] Docling 설치 파일 내려받기 여부를 선택합니다. 용량이 1~2GB입니다.
-set "ANS=N"
-set /p "ANS=      Docling 설치 파일도 받을까요? [y/N] "
-if /i not "%ANS%"=="y" goto :done
-%PY% -m pip download -r requirements-docling.txt -d wheels
-if errorlevel 1 goto :fail
-
-:done
 echo.
 echo ============================================================
 echo   wheels 폴더가 준비되었습니다.

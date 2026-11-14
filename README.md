@@ -1,24 +1,29 @@
-# PDF/PPTX 텍스트 추출 방식 비교
+# PDF/PPTX 텍스트 추출 (좌표 규칙 방식)
 
 PDF와 PPTX에서 글을 사람이 읽는 순서대로 뽑고, 매 쪽 반복되는 문구를 빼고, 쪽 제목을 따로 뽑습니다.
-세 가지 방식의 결과를 before/after로 나란히 보여 주는 HTML 리포트를 만듭니다.
+처리 전(before)과 처리 후(after)를 나란히 보여 주는 HTML 리포트를 만듭니다.
 
-| 방식 | 내용 | 필요한 것 |
+- 글자의 좌표와 크기만으로 판단합니다(재귀 X-Y cut). AI 모델을 쓰지 않습니다.
+- PDF는 PyMuPDF와 pdfplumber 두 가지로 읽어 결과를 나란히 보여 줍니다.
+- 실행 중 인터넷에 접속하지 않습니다.
+
+## 버전
+
+| 버전 | 내용 | 받는 곳 |
 |---|---|---|
-| A | 글자 좌표 규칙 (재귀 X-Y cut). PDF는 PyMuPDF와 pdfplumber 두 가지로 실행 | `requirements.txt` |
-| B | Docling (레이아웃 분석 모델) | `requirements-docling.txt` + 모델 파일 |
-| C | Docling의 영역·순서·분류 + A의 글자·규칙 | B와 같음 |
+| **2.0** (이 버전) | 좌표 규칙 방식만. Docling 없음 | `main` 브랜치, `v2.0` 태그 |
+| 1.0-docling | 좌표 규칙(A), Docling(B), 결합(C) 세 방식 비교 | `with-docling` 브랜치, `v1.0-docling` 태그 |
+
+두 버전은 서로 다른 폴더에 두고 따로 쓸 수 있습니다. 폴더마다 `install.bat`을 한 번씩 실행해야 합니다.
 
 ## 설치와 실행 (Windows, 배치파일)
 
 1. 이 폴더를 통째로 PC에 둡니다.
-2. `install.bat`을 더블클릭합니다. 전용 가상 환경(`.venv`)을 만들고 라이브러리를 설치합니다.
-   Docling(B, C 방식)을 설치할지는 중간에 물어봅니다. 설치하지 않아도 A 방식은 쓸 수 있습니다.
+2. `install.bat`을 더블클릭합니다. 이 폴더 안에 전용 가상 환경(`.venv`)을 만들고 라이브러리 세 개(PyMuPDF, pdfplumber, python-pptx)를 설치합니다.
 3. `run.bat`을 더블클릭해 경로를 입력하거나, 자료를 `run.bat` 위로 끌어다 놓습니다. 폴더 하나, 파일 하나, 파일이나 폴더 여러 개 모두 됩니다. 수십 개가 넘으면 한 폴더에 모아 폴더를 놓으세요(한 번에 넘길 수 있는 경로 길이에 한도가 있습니다).
    끝나면 `out\index.html`이 브라우저로 열립니다.
 
-Python 3.9 이상이 필요합니다(Docling은 3.10 이상). Python이 없으면 먼저 설치하되,
-설치 화면에서 "Add python.exe to PATH"를 체크하세요.
+Python 3.9 이상이 필요합니다. Python이 없으면 먼저 설치하되, 설치 화면에서 "Add python.exe to PATH"를 체크하세요.
 
 ### 인터넷이 막힌 PC에 설치하기
 
@@ -33,26 +38,13 @@ Python 3.9 이상이 필요합니다(Docling은 3.10 이상). Python이 없으�
 py -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-pip install -r requirements-docling.txt
 python compare.py 자료폴더 -o out
 ```
 
 - 폴더 안의 `.pdf`, `.pptx`를 모두 처리하고 `out\index.html`을 만듭니다.
-- Docling이 설치되어 있지 않으면 A 방식만 실행합니다. 일부러 빼려면 `--no-docling`.
 - 이름이 같은 PPTX와 PDF(예: `보고.pptx`, `보고.pdf`)를 함께 넣으면 두 결과가 얼마나 같은지 비교하는
-  `보고.pptx-vs-pdf.html`도 만듭니다. 방식을 고를 때 가장 중요한 근거입니다.
+  `보고.pptx-vs-pdf.html`도 만듭니다.
 - `samples` 폴더의 샘플로 먼저 시험해 볼 수 있습니다: `run.bat samples`
-
-### 인터넷이 안 되는 PC에서 Docling 쓰기
-
-인터넷이 되는 PC에서 모델을 받아(약 670MB) 폴더째 옮긴 뒤 경로를 지정합니다.
-
-```bat
-.venv\Scripts\docling-tools models download layout tableformer -o docling_models
-```
-
-`docling_models` 폴더를 프로그램 폴더에 두면 `run.bat`이 자동으로 사용합니다.
-직접 실행할 때는 `--docling-models docling_models`를 붙입니다.
 
 ### 옵션
 
@@ -67,13 +59,15 @@ python compare.py 자료폴더 -o out
 ## 리포트 보는 법
 
 - **Before 열**: 아무 처리 없이 읽은 원문. 번호 하나가 라이브러리가 따로 꺼낸 단위(PyMuPDF는 덩어리, pdfplumber는 줄, PPTX는 도형)이고, 쪽 그림의 회색 상자가 그 위치입니다. 빨강 취소선은 제거된 문구, 초록은 제목으로 뽑힌 줄.
-- **방식별 열**: 쪽 그림 위의 번호가 읽는 순서, 초록 상자가 제목. 아래에 제목, 본문, 제거한 문구와 이유.
+- **A 열**: 좌표 규칙을 적용한 결과. 쪽 그림 위의 번호가 읽는 순서, 초록 상자가 제목. 아래에 제목, 본문, 제거한 문구와 이유.
+  PDF는 `A-mu`(PyMuPDF로 읽음)와 `A-pl`(pdfplumber로 읽음) 두 열이 나옵니다. 적용하는 규칙은 같습니다.
+- **일치율**: 쪽의 글을 한 줄로 이어 붙여 글자와 순서가 얼마나 같은지 본 값입니다. 띄어쓰기, 줄바꿈, 덩어리를 끊은 위치는 세지 않습니다.
 - 위쪽 체크 상자로 열을 숨기거나 쪽 그림을 끌 수 있습니다.
 - `*.json`에는 같은 결과가 자료로 들어 있습니다(쪽마다 `title`, `body`, `removed`).
 
 ## 읽는 순서 기준값 시험
 
-방식 A가 읽는 순서를 정할 때 쓰는 기준값(예: 좌우로 자르려면 여백이 6pt 이상)은 샘플로 정한 값입니다.
+읽는 순서를 정할 때 쓰는 기준값(예: 좌우로 자르려면 여백이 6pt 이상)은 샘플로 정한 값입니다.
 실제 자료에서도 안전한지 확인하려면 자료를 `tune.bat` 위로 끌어다 놓습니다(직접 실행: `python tune.py 자료폴더`).
 
 - 기준값을 하나씩 바꿔 가며 순서를 다시 정하고, 지금 값일 때와 순서가 달라지는 쪽을 세어 `out\tune.html`로 보여 줍니다.
@@ -88,13 +82,15 @@ python compare.py 자료폴더 -o out
 - **PDF의 줄바꿈**: PDF에는 문단 표시가 없어 자동 줄바꿈과 문단 끝을 좌표로 추정합니다.
   띄어쓰기 자리에서 줄이 넘어간 경우 띄어쓰기가 빠질 수 있습니다("계약을체결함").
   PDF를 만든 프로그램에 따라 정도가 다르므로 회사 자료로 꼭 확인하세요.
+- **표**: 칸을 ` | `로 이어 한 행을 한 줄로 적습니다. 빈 칸은 건너뛰므로 빈 칸이 있는 행과 여러 단으로 된 머리글에서는 어느 열의 값인지 알 수 없습니다.
+- **두 라이브러리의 차이**: 글자 상자 높이를 다르게 알려 주어, 줄 간격이 넓은 글에서 PyMuPDF는 한 덩어리로 묶고 pdfplumber는 줄마다 나눌 수 있습니다. pdfplumber는 쪽 바깥에 놓인 글도 읽습니다.
 - **구형 .ppt, 스캔 PDF**는 지원하지 않습니다(.ppt는 .pptx로 저장 후 사용).
 - 발표자 노트는 읽지 않습니다(PDF에 없는 내용).
 
 ## 라이선스 참고
 
 PyMuPDF는 AGPL 또는 상용 라이선스입니다. 사내 도구로만 쓰는지, 배포하는지에 따라 확인이 필요합니다.
-pdfplumber, python-pptx, Docling은 MIT 라이선스입니다.
+pdfplumber와 python-pptx는 MIT 라이선스입니다.
 
 ## 구조
 
@@ -114,7 +110,6 @@ docparse/
   repeat.py             반복 문구 제거
   title.py              제목 추출
   pipeline.py           위 규칙을 순서대로 적용
-  docling_method.py     Docling 단독(B), 결합(C)
   report.py             HTML 리포트
 samples/                테스트용 샘플과 생성기
 ```

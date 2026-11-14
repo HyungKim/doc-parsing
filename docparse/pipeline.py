@@ -38,9 +38,9 @@ def _norm_box(b: Block, page) -> tuple:
     return (clamp(b.x0 / w), clamp(b.y0 / h), clamp(b.x1 / w), clamp(b.y1 / h))
 
 
-def apply_rules(doc: Document, keep_order: bool = False, repeat_ratio: float = 0.6,
+def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                 extra_keywords=None, order_log: Optional[list] = None) -> List[PageOut]:
-    """keep_order=True 이면 블록 순서를 그대로 둔다(Docling 순서를 쓸 때).
+    """반복 문구 제거, 문단 합치기, 제목 추출, 읽는 순서 정렬을 차례로 적용한다.
 
     order_log에 목록을 주면 쪽마다 (쪽 번호, 순서를 정할 덩어리들, 본문 글자 크기)를 담아 준다.
     읽는 순서 기준값을 바꿔 가며 다시 정렬해 보는 시험(tune.py)에서 쓴다.
@@ -71,15 +71,12 @@ def apply_rules(doc: Document, keep_order: bool = False, repeat_ratio: float = 0
             out.title = one_line(title.text)
             out.title_box = _norm_box(title, page)
         rest = [b for b in live if b is not title]
-        if keep_order:
-            ordered = rest
-        else:
-            # 돌려 쓴 글(축 제목, 옆면 주석)은 본문 흐름에 끼지 않도록 맨 뒤로 보낸다
-            turned = [b for b in rest if b.lines and abs(b.lines[0].angle) >= 3.0]
-            flat = [b for b in rest if not (b.lines and abs(b.lines[0].angle) >= 3.0)]
-            if order_log is not None:
-                order_log.append((page.number, flat, body))
-            ordered = xy_order(flat, body) + sorted(turned, key=lambda b: (b.y0, b.x0))
+        # 돌려 쓴 글(축 제목, 옆면 주석)은 본문 흐름에 끼지 않도록 맨 뒤로 보낸다
+        turned = [b for b in rest if b.lines and abs(b.lines[0].angle) >= 3.0]
+        flat = [b for b in rest if not (b.lines and abs(b.lines[0].angle) >= 3.0)]
+        if order_log is not None:
+            order_log.append((page.number, flat, body))
+        ordered = xy_order(flat, body) + sorted(turned, key=lambda b: (b.y0, b.x0))
         out.blocks = [OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind) for b in ordered]
         outs.append(out)
     return outs

@@ -1,14 +1,14 @@
-"""PDF/PPTX 텍스트 추출 방식 비교 프로그램.
+"""PDF/PPTX 텍스트 추출 프로그램 (좌표 규칙 방식).
 
-세 가지 방식의 결과를 before/after로 나란히 보여 주는 HTML 리포트를 만든다.
-  A  좌표 규칙      : 글자 좌표로 읽는 순서를 정한다 (PDF는 PyMuPDF와 pdfplumber 두 가지로 실행)
-  B  Docling        : 레이아웃 분석 모델
-  C  A + Docling    : Docling의 영역·순서·분류에 A의 글자와 규칙을 결합
+글자 좌표로 읽는 순서를 정하고, 반복 문구를 빼고, 쪽 제목을 따로 뽑는다.
+처리 전(before)과 처리 후(after)를 나란히 보여 주는 HTML 리포트를 만든다.
+PDF는 PyMuPDF와 pdfplumber 두 가지로 읽어 비교한다.
+
+Docling을 쓰는 B, C 방식은 이 버전에서 뺐다. 필요하면 저장소의 with-docling 브랜치(v1.0-docling)를 쓴다.
 
 사용법
   python compare.py 자료폴더
   python compare.py a.pdf a.pptx -o 결과폴더
-  python compare.py 자료폴더 --no-docling          (Docling 없이 A만)
 
 이름이 같은 PPTX와 PDF(예: 보고.pptx, 보고.pdf)가 함께 있으면
 두 결과가 얼마나 같은지 비교하는 리포트도 만든다.
@@ -26,6 +26,8 @@ from typing import Callable, List, Optional
 from docparse import report
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
+
+VERSION = "2.0"
 
 
 def log(msg: str) -> None:
@@ -53,28 +55,6 @@ class Options:
             if words:
                 self.rules["extra_keywords"] = re.compile("|".join(re.escape(w) for w in words), re.I)
         self.plumber = not args.no_pdfplumber
-        self.docling = None                       # DoclingRunner 또는 None
-        self.docling_error = ""
-
-
-def docling_methods(opts: Options, path: Path, page_map: List[int], read_base: Callable) -> List[MethodResult]:
-    from docparse import docling_method as dm
-
-    b = MethodResult("B", "B · Docling")
-    c = MethodResult("C", "C · A + Docling 결합")
-    if opts.docling is None:
-        b.error = c.error = opts.docling_error or "Docling을 사용하지 않도록 실행했습니다."
-        return [b, c]
-    try:
-        regions, seconds = opts.docling.regions(str(path))
-    except Exception as exc:
-        traceback.print_exc()
-        b.error = c.error = "%s: %s" % (type(exc).__name__, exc)
-        return [b, c]
-    timed(b, lambda: dm.alone(regions, page_map), seconds)
-    timed(c, lambda: apply_rules(dm.hybrid(read_base(), regions, page_map), keep_order=True, **opts.rules), seconds)
-    c.note = "Docling 변환 시간 포함"
-    return [b, c]
 
 
 def run_pdf(path: Path, opts: Options) -> report.DocRun:
@@ -106,8 +86,6 @@ def run_pdf(path: Path, opts: Options) -> report.DocRun:
 
         run.methods.append(timed(MethodResult("A-pl", "A · 좌표 규칙 (pdfplumber)"), a_plumber))
 
-    n = len(doc.pages) if doc is not None else 0
-    run.methods.extend(docling_methods(opts, path, list(range(1, n + 1)), lambda: pdf_pymupdf.read(str(path))))
     if opts.images:
         try:
             run.images = pdf_pymupdf.page_images(str(path))
@@ -130,17 +108,13 @@ def run_pptx(path: Path, opts: Options, include_hidden: bool) -> report.DocRun:
 
     run.methods.append(timed(MethodResult("A", "A · 좌표 규칙 (python-pptx)"), a_rules))
     doc = holder.get("doc")
-    page_map: List[int] = []
     if doc is not None:
-        page_map = doc.info.get("slide_numbers", [])
         if doc.pages:
             run.aspect = doc.pages[0].width / max(doc.pages[0].height, 1.0)
         hidden = doc.info.get("hidden", [])
         if hidden:
             run.notes.append("숨긴 슬라이드 %s번은 %s." % (
                 ", ".join(str(h) for h in hidden), "포함했습니다" if include_hidden else "제외했습니다 (PDF로 저장하면 빠지는 슬라이드)"))
-    run.methods.extend(docling_methods(
-        opts, path, page_map, lambda: pptx_reader.read(str(path), include_hidden=include_hidden)))
     return run
 
 
@@ -165,11 +139,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")      # Windows 콘솔 한글 깨짐 방지
         except Exception:
             pass
-    ap = argparse.ArgumentParser(description="PDF/PPTX 텍스트 추출 방식 비교 (before/after 리포트 생성)")
+    ap = argparse.ArgumentParser(description="PDF/PPTX 텍스트 추출 (좌표 규칙 방식, before/after 리포트 생성)")
     ap.add_argument("inputs", nargs="+", help="PDF/PPTX 파일 또는 폴더")
     ap.add_argument("-o", "--out", default="out", help="리포트를 저장할 폴더 (기본: out)")
-    ap.add_argument("--no-docling", action="store_true", help="Docling(B, C 방식)을 실행하지 않음")
-    ap.add_argument("--docling-models", default=None, help="미리 받아 둔 Docling 모델 폴더 (인터넷이 안 되는 PC용)")
     ap.add_argument("--no-pdfplumber", action="store_true", help="pdfplumber 비교를 생략")
     ap.add_argument("--no-images", action="store_true", help="리포트에 페이지 그림을 넣지 않음")
     ap.add_argument("--include-hidden", action="store_true", help="PPTX의 숨긴 슬라이드도 포함")
@@ -185,23 +157,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = Options(args)
 
-    footer = ""
-    if not args.no_docling:
-        from docparse import docling_method as dm
-        reason = dm.unavailable_reason()
-        if reason:
-            opts.docling_error = "Docling을 불러오지 못했습니다 (%s)" % reason
-            log(opts.docling_error + " → A 방식만 실행합니다.")
-        else:
-            log("Docling 모델을 불러오는 중...")
-            try:
-                opts.docling = dm.DoclingRunner(args.docling_models)
-                footer = "Docling 모델을 불러오는 데 %.1f초가 걸렸습니다(프로그램을 실행할 때마다 한 번, 문서별 처리 시간에는 포함하지 않음)." % opts.docling.load_seconds
-                log("  완료 (%.1f초)" % opts.docling.load_seconds)
-            except Exception as exc:
-                traceback.print_exc()
-                opts.docling_error = "Docling 모델을 불러오지 못했습니다 (%s: %s)" % (type(exc).__name__, exc)
-                log(opts.docling_error)
+    log("PDF/PPTX 텍스트 추출 %s (좌표 규칙 방식)" % VERSION)
+    footer = "프로그램 버전 %s · 좌표 규칙 방식" % VERSION
 
     pdf_by_stem = {f.stem: f for f in files if f.suffix.lower() == ".pdf"}
     runs = {}
@@ -228,7 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         for m in run.methods:
             state = "%.2f초" % m.seconds
             if m.error:
-                state = ("건너뜀" if opts.docling is None and m.key in ("B", "C") else "실패") + ": " + m.error
+                state = "실패: " + m.error
             log("  %-28s %s" % (m.label, state))
         name = "%s.%s.html" % (f.stem, run.kind)
         report.write_doc_report(run, str(out_dir / name))

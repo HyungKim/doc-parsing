@@ -39,7 +39,7 @@ class Block:
     y1: float = 0.0
     size: float = 0.0
     bold: bool = False
-    hint: str = ""                # title_ph, subtitle_ph, title_label, chart ...
+    hint: str = ""                # title_ph, subtitle_ph, chart ...
     role: str = "body"            # body | title | removed
     reason: str = ""
     text: str = ""                # 최종 텍스트
