@@ -96,6 +96,9 @@ ol.blocks li.tbl{border-left:3px solid var(--box);padding-left:8px;background:rg
 .tv .tag{display:inline-block;padding:0 6px;border-radius:3px;background:var(--box);color:var(--card);font-size:11px;font-weight:700}
 .tv-flat .tag{background:#17803f}
 .tv-flat .tag.no{background:var(--mute)}
+ol.blocks ol.flat{margin:4px 0 0;padding-left:26px}
+ol.blocks ol.flat li{margin:0 0 4px;padding-left:2px}
+ol.blocks ol.flat li::marker{color:var(--tt-ink);font-weight:700;font-size:12px}
 body.nopipe .tv-pipe{display:none}
 body.noflat .tv-flat{display:none}
 .rm{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px;font-size:13px;color:var(--rm-ink)}
@@ -212,11 +215,13 @@ def _after_col(m: MethodResult, p: Optional[PageOut], badge: str = "", other_key
             continue
         inner = "<div class=\"tv tv-pipe\"><span class=\"tag\">표 · 칸 구분</span><div class=\"txt\">%s</div></div>" % mark(b.text)
         if b.flat:
+            sentences = b.flat_lines or b.flat.split("\n")
             if b.flat_mode == "keyvalue":
-                tag = "<span class=\"tag\">표 · 풀어 쓰기</span>"
+                tag = "<span class=\"tag\">표 · 풀어 쓰기 · 문장 %d개</span>" % len(sentences)
             else:
-                tag = "<span class=\"tag no\">표 · 풀어 쓰지 않음 (%s)</span>" % esc(b.flat_reason)
-            inner += "<div class=\"tv tv-flat\">%s<div class=\"txt\">%s</div></div>" % (tag, esc(b.flat))
+                tag = "<span class=\"tag no\">표 · 풀어 쓰지 않음 (%s) · %d줄</span>" % (esc(b.flat_reason), len(sentences))
+            inner += "<div class=\"tv tv-flat\">%s<ol class=\"flat\">%s</ol></div>" % (
+                tag, "".join("<li><div class=\"txt\">%s</div></li>" % esc(t) for t in sentences))
         parts.append("<li class=\"tbl\">%s</li>" % inner)
     parts.append("</ol>")
     if p.removed:
@@ -286,44 +291,33 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
     ref = next((m for m in run.methods if m.pages and not m.error), None)
     n = run.page_count
 
-    def table_texts(p: Optional[PageOut]) -> List[str]:
-        return [one_line(b.text) for b in p.blocks if b.kind == "table"] if p is not None else []
-
     rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>처리 시간</th><th>제목을 찾은 쪽</th>"
-            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>%s 결과와 일치율</th><th>비고</th></tr>" % esc(ref.key if ref else "-")]
-    table_diffs = []
+            "<th>제거한 문구</th><th>본문 글자 수</th><th>찾은 표</th><th>그중 풀어 쓴 표</th><th>비고</th></tr>"]
     for m in run.methods:
         if m.error:
-            rows.append("<tr><td>%s</td><td colspan=\"8\" class=\"err\">%s</td></tr>" % (
+            rows.append("<tr><td>%s</td><td colspan=\"7\" class=\"err\">%s</td></tr>" % (
                 esc(m.label), esc(m.error if "건너뜀" in m.error else "실행하지 못했습니다: " + m.error)))
             continue
-        sims = [similarity(compare_key(page_text(_page(m, i))), compare_key(page_text(_page(ref, i)))) for i in range(n)] if ref else []
-        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td class=\"n\">%s</td><td>%s</td></tr>" % (
-            esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
-            sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
-            sum(len(table_texts(p)) for p in m.pages),
-            sum(1 for p in m.pages for b in p.blocks if b.kind == "table" and b.flat_mode == "keyvalue"),
-            "기준" if m is ref else ("%.1f%%" % (100 * sum(sims) / len(sims)) if sims else "-"), esc(m.note)))
-        if ref is not None and m is not ref:
-            pages = [i + 1 for i in range(n) if table_texts(_page(m, i)) != table_texts(_page(ref, i))]
-            table_diffs.append((m, pages))
+        tables = [b for p in m.pages for b in p.blocks if b.kind == "table"]
+        rows.append("<tr><td>%s</td><td class=\"n\">%.2f초</td><td class=\"n\">%d / %d</td><td class=\"n\">%d</td>"
+                    "<td class=\"n\">%d</td><td class=\"n\">%d개</td><td class=\"n\">%d개</td><td>%s</td></tr>" % (
+                        esc(m.label), m.seconds, sum(1 for p in m.pages if p.title), len(m.pages),
+                        sum(len(p.removed) for p in m.pages), sum(len(p.body) for p in m.pages),
+                        len(tables), sum(1 for b in tables if b.flat_mode == "keyvalue"), esc(m.note)))
     rows.append("</table></div>")
-    for m, pages in table_diffs:
-        if pages:
-            links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in pages[:80]) + (" 외 %d쪽" % (len(pages) - 80) if len(pages) > 80 else "")
-            rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: %s</p>" % (esc(ref.key), esc(m.label), links))
-        else:
-            rows.append("<p class=\"legend\"><b>표 인식이 %s와 다른 쪽</b> · %s: 없음</p>" % (esc(ref.key), esc(m.label)))
+    with_tables = [p.number for p in (ref.pages if ref else []) if any(b.kind == "table" for b in p.blocks)]
+    if with_tables:
+        links = ", ".join("<a href=\"#p%d\">%d쪽</a>" % (i, i) for i in with_tables[:80])
+        rows.append("<p class=\"legend\"><b>표가 있는 쪽</b>: %s%s</p>" % (
+            links, " 외 %d쪽" % (len(with_tables) - 80) if len(with_tables) > 80 else ""))
     rows.append("<p class=\"legend\">표로 인식한 덩어리는 왼쪽에 파란 줄이 붙고, 같은 표를 두 가지 모양으로 보여 줍니다. "
-                "<b>칸 구분</b>은 칸을 | 로 이은 기존 모양이고, <b>풀어 쓰기</b>는 값마다 행 머리글과 열 머리글을 붙인 모양입니다. "
+                "<b>칸 구분</b>은 칸을 | 로 이은 모양이고, <b>풀어 쓰기</b>는 값마다 행 머리글과 열 머리글을 붙인 모양입니다. "
+                "풀어 쓴 표는 표의 한 행이 한 문장이 되고, 문장마다 초록 번호가 붙습니다(번호는 구분용 표시이고 뽑은 글에는 들어가지 않습니다). "
                 "머리글이 분명하지 않은 표는 풀어 쓰지 않고 이유를 적습니다. 위쪽 '표:' 체크로 한쪽만 볼 수 있습니다.</p>")
-    rows.append("<p class=\"legend\">일치율은 칸 구분 모양의 글로 계산하고 표의 칸 구분은 세지 않으므로, "
-                "표 인식의 차이는 위의 '다른 쪽' 목록과 '찾은 표' 수로 확인하세요.</p>")
     rows.append("<p class=\"legend\">Before 열의 번호는 라이브러리가 따로 꺼내 준 단위입니다. 같은 번호 안의 줄은 한 덩어리로 나온 것이고, "
                 "번호가 다르면 따로 나온 것입니다. 번호 순서가 곧 저장된 순서이고, 배치 그림의 회색 상자가 그 단위의 위치입니다.</p>")
-    rows.append("<p class=\"legend\">Before 열 표시: <span style=\"background:var(--rm-bg);color:var(--rm-ink)\">빨강 취소선</span> = %s 방식이 제거한 문구, "
-                "<span style=\"background:var(--tt-bg);color:var(--tt-ink)\">초록</span> = %s 방식이 고른 제목. "
-                "일치율은 띄어쓰기와 줄바꿈을 무시하고 글자와 순서를 비교한 값입니다.</p>" % ((esc(ref.key),) * 2 if ref else ("-", "-")))
+    rows.append("<p class=\"legend\">Before 열 표시: <span style=\"background:var(--rm-bg);color:var(--rm-ink)\">빨강 취소선</span> = 제거한 문구, "
+                "<span style=\"background:var(--tt-bg);color:var(--tt-ink)\">초록</span> = 제목으로 고른 줄.</p>")
     for note in run.notes:
         rows.append("<p class=\"legend\">%s</p>" % esc(note))
 
@@ -333,7 +327,6 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
         removed_keys = {compare_key(t) for t, _ in (rp.removed if rp else [])}
         removed_keys.discard("")
         title_key = compare_key(rp.title) if rp else ""
-        ref_key = compare_key(page_text(rp))
         body.append("<section class=\"page\" id=\"p%d\" style=\"%s\"><h2>%d쪽</h2><div class=\"cols\">" % (i + 1, _page_style(run, i), i + 1))
         for key, label, texts in run.befores:
             per_page = run.before_units.get(key, [])
@@ -342,11 +335,7 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
                                     per_page[i] if i < len(per_page) else None, run.before_unit_names.get(key, ""),
                                     box_pages[i] if i < len(box_pages) else None))
         for m in run.methods:
-            p = _page(m, i)
-            badge = ""
-            if p is not None and m is not ref and not m.error and ref:
-                badge = "%s와 %.0f%% 일치" % (esc(ref.key), 100 * similarity(compare_key(page_text(p)), ref_key))
-            body.append(_after_col(m, p, badge))
+            body.append(_after_col(m, _page(m, i)))
         body.append("</div></section>")
 
     cols = [(k, l) for k, l, _ in run.befores] + [(m.key, m.label) for m in run.methods]
@@ -358,12 +347,11 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
 # ---------------------------------------------------------------- PPTX ↔ PDF 일치 검증
 
 def pair_stats(pptx: DocRun, pdf: DocRun) -> List[dict]:
-    """같은 자료의 PPTX 결과와 PDF 결과가 얼마나 같은지 방식별로 계산한다."""
+    """같은 자료의 PPTX 결과와 PDF 결과가 얼마나 같은지 계산한다."""
     stats = []
     by_key = {m.key: m for m in pptx.methods}
     for pm in pdf.methods:
-        base_key = pm.key.split("-")[0]              # A-mu, A-pl → A
-        xm = by_key.get(base_key)
+        xm = by_key.get(pm.key)
         if xm is None or pm.error or xm.error:
             continue
         n = min(len(pm.pages), len(xm.pages))
@@ -380,13 +368,13 @@ def pair_stats(pptx: DocRun, pdf: DocRun) -> List[dict]:
 
 def write_pair_report(pptx: DocRun, pdf: DocRun, out_path: str) -> List[dict]:
     stats = pair_stats(pptx, pdf)
-    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>방식</th><th>평균 일치율<br>(띄어쓰기 무시)</th><th>평균 일치율<br>(띄어쓰기 포함)</th>"
+    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>비교</th><th>평균 일치율<br>(띄어쓰기 무시)</th><th>평균 일치율<br>(띄어쓰기 포함)</th>"
             "<th>가장 낮은 쪽</th><th>제목이 같은 쪽</th></tr>"]
     for s in stats:
         n = s["n"] or 1
         worst = min(range(s["n"]), key=lambda i: s["loose"][i]) if s["n"] else 0
         rows.append("<tr><td>%s</td><td class=\"n\">%.1f%%</td><td class=\"n\">%.1f%%</td><td class=\"n\"><a href=\"#p%d\">%d쪽 (%.0f%%)</a></td><td class=\"n\">%d / %d</td></tr>" % (
-            esc(s["pdf"].label), 100 * sum(s["loose"]) / n, 100 * sum(s["strict"]) / n,
+            "PPTX ↔ PDF", 100 * sum(s["loose"]) / n, 100 * sum(s["strict"]) / n,
             worst + 1, worst + 1, 100 * s["loose"][worst] if s["n"] else 0, s["titles"], s["n"]))
     rows.append("</table></div>")
     if len(pptx.methods[0].pages if pptx.methods else []) != len(pdf.methods[0].pages if pdf.methods else []):
@@ -403,13 +391,10 @@ def write_pair_report(pptx: DocRun, pdf: DocRun, out_path: str) -> List[dict]:
                 continue
             xp, pp = s["pptx"].pages[i], s["pdf"].pages[i]
             badge = "%.0f%% 일치" % (100 * s["loose"][i])
-            key = s["pdf"].key
-            body.append(_after_col(s["pptx"], xp, "PPTX", compare_key(page_text(pp)), show_map=False,
-                                   col_id=key, heading=s["pdf"].label))
-            body.append(_after_col(s["pdf"], pp, "PDF · " + badge, compare_key(page_text(xp)), show_map=False,
-                                   col_id=key, heading=s["pdf"].label))
+            body.append(_after_col(s["pptx"], xp, "PPTX", compare_key(page_text(pp)), show_map=False, col_id="pptx"))
+            body.append(_after_col(s["pdf"], pp, "PDF · " + badge, compare_key(page_text(xp)), show_map=False, col_id="pdf"))
         body.append("</div></section>")
-    cols = [(s["pdf"].key, s["pdf"].label) for s in stats]
+    cols = [("pptx", "PPTX 결과"), ("pdf", "PDF 결과")] if stats else []
     sub = "같은 자료의 PPTX와 PDF 결과가 얼마나 같은지 비교 · %d쪽" % n
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(_shell(pptx.name + "  ↔  " + pdf.name, sub, _toolbar(cols, maps=False), "".join(body)))
@@ -419,13 +404,13 @@ def write_pair_report(pptx: DocRun, pdf: DocRun, out_path: str) -> List[dict]:
 # ---------------------------------------------------------------- 목록, JSON
 
 def write_index(entries: List[dict], out_path: str, footer: str = "") -> None:
-    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>방식별 처리 시간</th><th>PPTX ↔ PDF 일치율</th></tr>"]
+    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>처리 시간</th><th>PPTX ↔ PDF 일치율</th></tr>"]
     for e in entries:
         run: DocRun = e["run"]
-        times = " · ".join("%s %.2f초" % (esc(m.key), m.seconds) if not m.error else "%s 실패" % esc(m.key) for m in run.methods)
+        times = " · ".join("%.2f초" % m.seconds if not m.error else "실패" for m in run.methods)
         pair = ""
         if e.get("pair_file"):
-            best = " · ".join("%s %.0f%%" % (esc(s["pdf"].key), 100 * sum(s["loose"]) / max(s["n"], 1)) for s in e["pair_stats"])
+            best = " · ".join("%.0f%%" % (100 * sum(s["loose"]) / max(s["n"], 1)) for s in e["pair_stats"])
             pair = "<a href=\"%s\">비교 보기</a><br><span class=\"sub\">%s</span>" % (esc(e["pair_file"]), best)
         rows.append("<tr><td><a href=\"%s\">%s</a></td><td class=\"n\">%d</td><td>%s</td><td>%s</td></tr>" % (
             esc(e["file"]), esc(run.name), run.page_count, times, pair))
@@ -433,7 +418,7 @@ def write_index(entries: List[dict], out_path: str, footer: str = "") -> None:
     if footer:
         rows.append("<p class=\"legend\">%s</p>" % esc(footer))
     with open(out_path, "w", encoding="utf-8") as f:
-        f.write(_shell("문서 추출 방식 비교", "문서를 눌러 before/after를 확인하세요.", "", "".join(rows)))
+        f.write(_shell("문서 추출 결과", "문서를 눌러 before/after를 확인하세요.", "", "".join(rows)))
 
 
 def write_json(run: DocRun, out_path: str) -> None:
@@ -447,6 +432,7 @@ def write_json(run: DocRun, out_path: str) -> None:
                 "pages": [{"page": p.number, "title": p.title, "title_reason": p.title_reason, "body": p.body,
                            "body_flat": p.body_flat,
                            "tables": [{"mode": b.flat_mode, "reason": b.flat_reason, "text": b.text, "flat": b.flat,
+                                       "flat_lines": b.flat_lines,
                                        **(b.table or {})} for b in p.blocks if b.kind == "table"],
                            "removed": [{"text": t, "reason": r} for t, r in p.removed]} for p in m.pages],
             } for m in run.methods

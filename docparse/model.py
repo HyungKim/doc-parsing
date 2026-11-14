@@ -82,6 +82,7 @@ class OutBlock:
     kind: str = "text"
     # 표일 때만: 같은 표를 '행마다 머리글을 붙여 풀어 쓴' 모양과 칸 구조 (tables.py)
     flat: str = ""
+    flat_lines: List[str] = field(default_factory=list)   # 풀어 쓴 글을 문장(표의 한 행)마다 나눈 것
     flat_mode: str = ""                      # keyvalue: 풀어 씀 | pipe: 머리글이 분명하지 않아 칸 구분으로 둠
     flat_reason: str = ""
     table: Optional[dict] = None             # {"rows", "cols", "cells": [(r, c, rowspan, colspan, text)]}

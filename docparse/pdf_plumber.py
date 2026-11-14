@@ -1,6 +1,7 @@
-"""pdfplumber로 PDF 글자를 읽는다."""
+"""pdfplumber로 PDF 글자를 읽는다. 쪽 그림도 pdfplumber(안에서 pypdfium2를 씀)로 그린다."""
 from __future__ import annotations
 
+import io
 import math
 from typing import List
 
@@ -8,6 +9,26 @@ import pdfplumber
 
 from .model import Document, Page
 from .pdf_common import BOLD_FONT, Ch, chars_to_blocks
+
+
+def page_images(path: str, width: int = 900) -> list:
+    """리포트에 넣을 쪽 그림(JPEG). 추출 시간 측정과 분리하려고 따로 둔다."""
+    out = []
+    with pdfplumber.open(str(path)) as pdf:
+        for page in pdf.pages:
+            try:
+                img = page.to_image(width=width, antialias=True).original
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=65)
+                out.append(buf.getvalue())
+            except Exception:                      # 그림은 참고용이라 못 그려도 넘어간다
+                out.append(None)
+    return out
+
+
+def page_count(path: str) -> int:
+    with pdfplumber.open(str(path)) as pdf:
+        return len(pdf.pages)
 
 
 def _font_size(c: dict, m) -> float:

@@ -2,9 +2,10 @@
 
 글자 좌표로 읽는 순서를 정하고, 반복 문구를 빼고, 쪽 제목을 따로 뽑는다.
 처리 전(before)과 처리 후(after)를 나란히 보여 주는 HTML 리포트를 만든다.
-PDF는 PyMuPDF와 pdfplumber 두 가지로 읽어 비교한다.
+PDF는 pdfplumber로, PPTX는 python-pptx로 읽는다.
 
-Docling을 쓰는 B, C 방식은 이 버전에서 뺐다. 필요하면 저장소의 with-docling 브랜치(v1.0-docling)를 쓴다.
+이전 버전: PyMuPDF와 나란히 비교하던 버전은 v2.3 태그,
+Docling을 쓰는 B, C 방식이 있던 버전은 with-docling 브랜치(v1.0-docling)에 있다.
 
 사용법
   python compare.py 자료폴더
@@ -27,7 +28,7 @@ from docparse import report
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "2.3"
+VERSION = "3.0"
 
 
 def log(msg: str) -> None:
@@ -35,31 +36,20 @@ def log(msg: str) -> None:
 
 
 def environment_note() -> str:
-    """어떤 라이브러리 버전으로 돌렸는지. 결과가 PC마다 다를 때 원인을 찾는 데 쓴다.
-
-    PyMuPDF는 2.0부터 표 찾기(find_tables)에 자체 내장 모델(onnxruntime)을 쓰는데,
-    이 프로그램은 그 모델을 끄고 선을 따라 찾는 규칙을 쓴다. 모델을 켠 결과는 비교용 열로만 보여 준다.
-    """
+    """어떤 라이브러리 버전으로 돌렸는지. 결과가 PC마다 다를 때 원인을 찾는 데 쓴다."""
     from importlib import metadata
 
     parts = ["Python %s" % sys.version.split()[0]]
-    model = ""
-    try:
-        try:
-            import pymupdf
-        except ImportError:
-            import fitz as pymupdf  # type: ignore
-        parts.append("PyMuPDF %s" % getattr(pymupdf, "__version__", getattr(pymupdf, "VersionBind", "?")))
-        from docparse import pdf_pymupdf
-        model = "PyMuPDF 표 찾기: %s" % pdf_pymupdf.table_mode()
-    except Exception:
-        parts.append("PyMuPDF 없음")
-    for name in ("pdfplumber", "python-pptx"):
-        try:
-            parts.append("%s %s" % (name, metadata.version(name)))
-        except Exception:
-            parts.append("%s 없음" % name)
-    return " · ".join(parts) + (" · " + model if model else "")
+    for name in ("pdfplumber", "pdfminer.six", "pypdfium2", "python-pptx"):
+        found = None
+        for alias in (name, name.replace(".", "-"), name.replace(".", "_").replace("-", "_")):
+            try:                                   # 구버전 Python은 이름의 점과 밑줄을 같게 봐 주지 않는다
+                found = metadata.version(alias)
+                break
+            except Exception:
+                continue
+        parts.append("%s %s" % (name, found) if found else "%s 없음" % name)
+    return " · ".join(parts)
 
 
 def timed(result: MethodResult, fn: Callable[[], list], extra_seconds: float = 0.0) -> MethodResult:
@@ -82,52 +72,30 @@ class Options:
             words = [w.strip() for w in args.keywords.split(",") if w.strip()]
             if words:
                 self.rules["extra_keywords"] = re.compile("|".join(re.escape(w) for w in words), re.I)
-        self.plumber = not args.no_pdfplumber
-        self.model_compare = not args.no_pymupdf_model
 
 
 def run_pdf(path: Path, opts: Options) -> report.DocRun:
-    from docparse import pdf_pymupdf
+    from docparse import pdf_plumber
 
     run = report.DocRun(path=str(path), name=path.name, kind="pdf")
     holder = {}
 
-    def a_pymupdf():
-        holder["doc"] = pdf_pymupdf.read(str(path))
-        run.add_before("before-mu", "Before · PyMuPDF 기본 추출", holder["doc"].pages,
-                       "PyMuPDF가 한 덩어리로 묶어 준 글")
+    def a_rules():
+        holder["doc"] = pdf_plumber.read(str(path))
+        run.add_before("before", "Before · pdfplumber 기본 추출", holder["doc"].pages,
+                       "한 줄 (pdfplumber는 줄 단위로만 줌)")
         return apply_rules(holder["doc"], **opts.rules)
 
-    run.methods.append(timed(MethodResult("A-mu", "A · 좌표 규칙 (PyMuPDF)"), a_pymupdf))
+    run.methods.append(timed(MethodResult("A", "After · 좌표 규칙 (pdfplumber)"), a_rules))
     doc = holder.get("doc")
     if doc is not None and doc.pages:
         run.aspect = doc.pages[0].width / max(doc.pages[0].height, 1.0)
         if doc.info.get("producer"):
             run.notes.append("PDF를 만든 프로그램: %s" % doc.info["producer"])
 
-    if opts.model_compare:
-        # 같은 규칙을 적용하되 표만 PyMuPDF 내장 모델로 찾은 결과. 선 규칙(A-mu)과 나란히 비교하는 용도다.
-        m = MethodResult("A-mu-model", "A · 좌표 규칙 (PyMuPDF + 내장 모델)")
-        if pdf_pymupdf.MODEL_INSTALLED:
-            m.note = "표를 PyMuPDF 내장 모델로 찾음 (비교용)"
-            timed(m, lambda: apply_rules(pdf_pymupdf.read(str(path), use_model=True), **opts.rules))
-        else:
-            m.error = pdf_pymupdf.MODEL_MISSING
-        run.methods.append(m)
-
-    if opts.plumber:
-        def a_plumber():
-            from docparse import pdf_plumber
-            d = pdf_plumber.read(str(path))
-            run.add_before("before-pl", "Before · pdfplumber 기본 추출", d.pages,
-                           "한 줄 (pdfplumber는 줄 단위로만 줌)")
-            return apply_rules(d, **opts.rules)
-
-        run.methods.append(timed(MethodResult("A-pl", "A · 좌표 규칙 (pdfplumber)"), a_plumber))
-
     if opts.images:
         try:
-            run.images = pdf_pymupdf.page_images(str(path))
+            run.images = pdf_plumber.page_images(str(path))
         except Exception:
             run.images = []
     return run
@@ -145,7 +113,7 @@ def run_pptx(path: Path, opts: Options, include_hidden: bool) -> report.DocRun:
                        "도형(글상자) 하나")
         return apply_rules(holder["doc"], **opts.rules)
 
-    run.methods.append(timed(MethodResult("A", "A · 좌표 규칙 (python-pptx)"), a_rules))
+    run.methods.append(timed(MethodResult("A", "After · 좌표 규칙 (python-pptx)"), a_rules))
     doc = holder.get("doc")
     if doc is not None:
         if doc.pages:
@@ -181,8 +149,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="PDF/PPTX 텍스트 추출 (좌표 규칙 방식, before/after 리포트 생성)")
     ap.add_argument("inputs", nargs="+", help="PDF/PPTX 파일 또는 폴더")
     ap.add_argument("-o", "--out", default="out", help="리포트를 저장할 폴더 (기본: out)")
-    ap.add_argument("--no-pdfplumber", action="store_true", help="pdfplumber 비교를 생략")
-    ap.add_argument("--no-pymupdf-model", action="store_true", help="PyMuPDF 내장 모델로 표를 찾은 비교용 열을 생략")
     ap.add_argument("--no-images", action="store_true", help="리포트에 페이지 그림을 넣지 않음")
     ap.add_argument("--include-hidden", action="store_true", help="PPTX의 숨긴 슬라이드도 포함")
     ap.add_argument("--repeat-ratio", type=float, default=0.6, help="본문 영역의 글을 반복 문구로 볼 페이지 비율 (기본 0.6)")
@@ -215,11 +181,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             if twin is not None and not include_hidden:
                 # 짝이 되는 PDF의 쪽 수가 '숨긴 슬라이드 포함' 수와 같으면 숨긴 슬라이드도 읽는다
                 try:
-                    from docparse import pdf_pymupdf, pptx_reader
+                    from docparse import pdf_plumber, pptx_reader
                     hidden = pptx_reader.hidden_slide_numbers(str(f))
                     from pptx import Presentation
                     total = len(Presentation(str(f)).slides)
-                    if hidden and pdf_pymupdf.page_count(str(twin)) == total:
+                    if hidden and pdf_plumber.page_count(str(twin)) == total:
                         include_hidden = True
                 except Exception:
                     pass
@@ -228,7 +194,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             state = "%.2f초" % m.seconds
             if m.error:
                 state = m.error if "건너뜀" in m.error else "실패: " + m.error
-            log("  %-28s %s" % (m.label, state))
+            log("  %-34s %s" % (m.label, state))
         name = "%s.%s.html" % (f.stem, run.kind)
         report.write_doc_report(run, str(out_dir / name))
         report.write_json(run, str(out_dir / ("%s.%s.json" % (f.stem, run.kind))))
@@ -243,7 +209,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             e["pair_stats"] = report.write_pair_report(run, runs[(stem, "pdf")], str(out_dir / pair_name))
             e["pair_file"] = pair_name
             for s in e["pair_stats"]:
-                log("  PPTX↔PDF 일치율 %-26s %.1f%%" % (s["pdf"].label, 100 * sum(s["loose"]) / max(s["n"], 1)))
+                log("  PPTX↔PDF 일치율 %.1f%%" % (100 * sum(s["loose"]) / max(s["n"], 1)))
 
     report.write_index(entries, str(out_dir / "index.html"), footer)
     log("완료: %s" % (out_dir / "index.html").resolve())

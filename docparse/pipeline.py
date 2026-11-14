@@ -100,6 +100,7 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                 if info is not None:
                     flat = info["flat"]
                     ob.flat, ob.flat_mode, ob.flat_reason = flat.text, flat.mode, flat.reason
+                    ob.flat_lines = list(flat.lines)
                     ob.table = {"rows": info["rows"], "cols": info["cols"], "cells": info["cells"],
                                 "head_rows": flat.head_rows, "label_cols": flat.label_cols}
             out.blocks.append(ob)

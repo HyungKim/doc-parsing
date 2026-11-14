@@ -20,7 +20,7 @@ echo 사용할 Python:
 %PY% --version
 echo.
 
-echo 라이브러리 설치 파일을 내려받습니다. PyMuPDF, pdfplumber, python-pptx
+echo 라이브러리 설치 파일을 내려받습니다. pdfplumber, python-pptx
 %PY% -m pip download -r requirements.txt -d wheels
 if errorlevel 1 goto :fail
 

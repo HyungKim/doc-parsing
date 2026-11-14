@@ -30,7 +30,7 @@ if exist "wheels\" set "PIPOPT=--no-index --find-links wheels"
 if defined PIPOPT echo       wheels 폴더가 있어 인터넷 없이 설치합니다.
 
 echo.
-echo [2/2] 라이브러리를 설치합니다. PyMuPDF, pdfplumber, python-pptx
+echo [2/2] 라이브러리를 설치합니다. pdfplumber, python-pptx
 "%VPY%" -m pip install %PIPOPT% -r requirements.txt
 if errorlevel 1 goto :fail
 

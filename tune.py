@@ -8,11 +8,11 @@
   바로 옆 값에서도 달라진다   → 그 쪽들을 보고 어느 순서가 맞는지 확인한다
 
 글자를 읽고 덩어리로 묶는 일은 파일마다 한 번만 하고, 순서 정하기만 값마다 다시 한다.
+읽는 방법은 compare.py와 같다(PDF는 pdfplumber, PPTX는 python-pptx).
 
 사용법
   python tune.py 자료폴더
   python tune.py a.pdf b.pptx -o 결과폴더
-  python tune.py 자료폴더 --pdfplumber        (PDF를 pdfplumber로 읽어서 시험)
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def values_of(name: str, values: List[float]) -> Tuple[List[float], float, List[
     return allv, current, near
 
 
-def load(files: List[Path], use_plumber: bool, include_hidden: bool) -> List[PageCase]:
+def load(files: List[Path], include_hidden: bool) -> List[PageCase]:
     cases: List[PageCase] = []
     for f in files:
         kind = f.suffix.lower().lstrip(".")
@@ -68,12 +68,9 @@ def load(files: List[Path], use_plumber: bool, include_hidden: bool) -> List[Pag
             if kind == "pptx":
                 from docparse import pptx_reader
                 doc = pptx_reader.read(str(f), include_hidden=include_hidden)
-            elif use_plumber:
+            else:
                 from docparse import pdf_plumber
                 doc = pdf_plumber.read(str(f))
-            else:
-                from docparse import pdf_pymupdf
-                doc = pdf_pymupdf.read(str(f))
             order_log: list = []
             apply_rules(doc, order_log=order_log)
         except Exception as exc:
@@ -173,15 +170,15 @@ def conclusion(cases: List[PageCase], results: dict) -> Tuple[str, str, set, set
                     % (len(near_pages), 100.0 * len(near_pages) / testable)), near_pages, any_pages
 
 
-def write_report(cases: List[PageCase], results: dict, out_dir: Path, n_files: int, reader: str) -> Path:
+def write_report(cases: List[PageCase], results: dict, out_dir: Path, n_files: int) -> Path:
     testable = sum(1 for c in cases if len(c.blocks) >= 2)
     kind, sentence, near_pages, any_pages = conclusion(cases, results)
     body = ["<style>%s</style>" % CSS]
     body.append("<div class=\"box\"><p><span class=\"%s\">%s</span></p>"
-                "<p class=\"legend\">시험한 자료: 파일 %d개 · %d쪽 (그중 순서를 정할 덩어리가 둘 이상인 쪽 %d쪽) · PDF 읽기: %s</p>"
+                "<p class=\"legend\">시험한 자료: 파일 %d개 · %d쪽 (그중 순서를 정할 덩어리가 둘 이상인 쪽 %d쪽) · PDF는 pdfplumber, PPTX는 python-pptx로 읽음</p>"
                 "<p class=\"legend\">기준값을 한 번에 하나씩만 바꾸고, 지금 값일 때와 읽는 순서가 달라진 쪽을 셉니다. "
                 "글자 내용, 덩어리 나누기, 제목, 반복 문구 제거는 바꾸지 않습니다.</p></div>"
-                % (kind, esc(sentence), n_files, len(cases), testable, esc(reader)))
+                % (kind, esc(sentence), n_files, len(cases), testable))
 
     for name, label, unit, values in PARAMS:
         allv, current, near = values_of(name, values)
@@ -250,7 +247,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="읽는 순서 기준값을 바꿔 가며 순서가 달라지는 쪽을 센다")
     ap.add_argument("inputs", nargs="+", help="PDF/PPTX 파일 또는 폴더")
     ap.add_argument("-o", "--out", default="out", help="리포트를 저장할 폴더 (기본: out)")
-    ap.add_argument("--pdfplumber", action="store_true", help="PDF를 PyMuPDF 대신 pdfplumber로 읽어서 시험")
+    ap.add_argument("--pdfplumber", action="store_true", help=argparse.SUPPRESS)     # 예전 옵션. 이제 항상 pdfplumber라 받기만 한다
     ap.add_argument("--include-hidden", action="store_true", help="PPTX의 숨긴 슬라이드도 포함")
     args = ap.parse_args(argv)
 
@@ -261,7 +258,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cases = load(files, args.pdfplumber, args.include_hidden)
+    cases = load(files, args.include_hidden)
     testable = sum(1 for c in cases if len(c.blocks) >= 2)
     log("순서를 다시 정하는 중: %d쪽" % testable)
     results = evaluate(cases)
@@ -276,7 +273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             log("  %8s : %4d쪽 달라짐%s" % (fmt(v, unit), len(results[(name, v)]), "   ← 바로 옆 값" if v in near else ""))
     log("")
     log(conclusion(cases, results)[1])
-    path = write_report(cases, results, out_dir, len(files), "pdfplumber" if args.pdfplumber else "PyMuPDF")
+    path = write_report(cases, results, out_dir, len(files))
     log("완료: %s" % path.resolve())
     return 0
 
