@@ -24,11 +24,11 @@ import traceback
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from docparse import report
+from docparse import report, units
 from docparse.model import MethodResult
 from docparse.pipeline import apply_rules
 
-VERSION = "3.2"
+VERSION = "3.3"
 
 
 def log(msg: str) -> None:
@@ -196,8 +196,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 state = m.error if "건너뜀" in m.error else "실패: " + m.error
             log("  %-34s %s" % (m.label, state))
         name = "%s.%s.html" % (f.stem, run.kind)
+        json_name = "%s.%s.json" % (f.stem, run.kind)
+        units_name = "%s.%s.units.json" % (f.stem, run.kind)
+        units_page = "%s.%s.units.html" % (f.stem, run.kind)
+        done = next((m for m in run.methods if m.pages and not m.error), None)
+        if done is not None:
+            run.units_file = units_page
         report.write_doc_report(run, str(out_dir / name))
-        report.write_json(run, str(out_dir / ("%s.%s.json" % (f.stem, run.kind))))
+        report.write_json(run, str(out_dir / json_name))
+        if done is not None:
+            # 다음 모델에 넣을 단위(쪽, 덩어리, 줄)로 나눈 파일과, 지금 출력과 나란히 비교하는 화면
+            made = units.write_units_json(run.name, run.kind, done.pages, str(out_dir / units_name), VERSION)
+            units.write_units_report(run.name, run.kind, done.pages, made, str(out_dir / units_page),
+                                     doc_file=name, json_file=json_name, units_file=units_name)
         runs[(f.stem, run.kind)] = run
         entries.append({"run": run, "file": name})
 

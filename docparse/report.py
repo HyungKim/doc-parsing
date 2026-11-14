@@ -35,6 +35,7 @@ class DocRun:
     images: List[Optional[bytes]] = field(default_factory=list)
     aspect: float = 4 / 3
     notes: List[str] = field(default_factory=list)
+    units_file: str = ""                        # 입력 단위 비교 화면의 파일 이름 (있으면 리포트와 목록에 링크를 건다)
 
     @property
     def page_count(self) -> int:
@@ -334,6 +335,9 @@ def write_doc_report(run: DocRun, out_path: str) -> None:
                 "<span style=\"background:var(--tt-bg);color:var(--tt-ink)\">초록</span> = 제목으로 고른 줄.</p>")
     for note in run.notes:
         rows.append("<p class=\"legend\">%s</p>" % esc(note))
+    if run.units_file:
+        rows.append("<p class=\"legend\"><b>다음 모델에 넣을 단위</b>: 이 결과를 쪽·덩어리·줄 단위로 나눈 모양과 지금의 실제 출력을 "
+                    "<a href=\"%s\">나란히 비교하는 화면</a>이 있습니다.</p>" % esc(run.units_file))
 
     body = ["".join(rows)]
     for i in range(n):
@@ -418,7 +422,7 @@ def write_pair_report(pptx: DocRun, pdf: DocRun, out_path: str) -> List[dict]:
 # ---------------------------------------------------------------- 목록, JSON
 
 def write_index(entries: List[dict], out_path: str, footer: str = "") -> None:
-    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>처리 시간</th><th>PPTX ↔ PDF 일치율</th></tr>"]
+    rows = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>문서</th><th>쪽 수</th><th>처리 시간</th><th>PPTX ↔ PDF 일치율</th><th>입력 단위</th></tr>"]
     for e in entries:
         run: DocRun = e["run"]
         times = " · ".join("%.2f초" % m.seconds if not m.error else "실패" for m in run.methods)
@@ -426,8 +430,9 @@ def write_index(entries: List[dict], out_path: str, footer: str = "") -> None:
         if e.get("pair_file"):
             best = " · ".join("%.0f%%" % (100 * sum(s["loose"]) / max(s["n"], 1)) for s in e["pair_stats"])
             pair = "<a href=\"%s\">비교 보기</a><br><span class=\"sub\">%s</span>" % (esc(e["pair_file"]), best)
-        rows.append("<tr><td><a href=\"%s\">%s</a></td><td class=\"n\">%d</td><td>%s</td><td>%s</td></tr>" % (
-            esc(e["file"]), esc(run.name), run.page_count, times, pair))
+        unit = "<a href=\"%s\">비교 보기</a>" % esc(run.units_file) if run.units_file else ""
+        rows.append("<tr><td><a href=\"%s\">%s</a></td><td class=\"n\">%d</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+            esc(e["file"]), esc(run.name), run.page_count, times, pair, unit))
     rows.append("</table></div>")
     if footer:
         rows.append("<p class=\"legend\">%s</p>" % esc(footer))
