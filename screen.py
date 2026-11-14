@@ -1,6 +1,6 @@
-"""2단계: 추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델 네 가지를 비교한다.
+"""2단계: 추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델들을 비교한다.
 
-    python screen.py                 out 폴더의 추출 결과를 네 모델로 점수 매기고 비교 화면을 만든다
+    python screen.py                 out 폴더의 추출 결과를 세 모델로 점수 매기고 비교 화면을 만든다
     python screen.py --download      모델 파일만 내려받는다
 
 1단계(compare.py)가 만든 out/이름.units.json 을 읽는다. 1단계의 결과물은 건드리지 않는다.
@@ -16,7 +16,7 @@ from screening import cli
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="1차 걸러내기 모델 비교 (bge-m3, KURE-v1, multilingual-e5-small, bge-m3-zeroshot-v2.0-c)")
+    parser = argparse.ArgumentParser(description="1차 걸러내기 모델 비교 (bge-m3, KURE-v1, multilingual-e5-small)")
     cli.add_common(parser)
     parser.add_argument("--download", action="store_true", help="모델 파일만 내려받고 끝냄")
     args = parser.parse_args()

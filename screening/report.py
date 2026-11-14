@@ -1,7 +1,7 @@
 """걸러내기 비교 리포트(HTML). 인터넷 없이 브라우저로 바로 열린다.
 
     out/screen/index.html      기준 문장, 모델, 학습 전·후 수치, 덩어리 대 줄 비교, 문서 목록
-    out/screen/이름.html       문서마다: 덩어리와 그 줄마다 모델 네 가지의 점수(학습 전 → 후)
+    out/screen/이름.html       문서마다: 덩어리와 그 줄마다 모델별 점수(학습 전 → 후)
 """
 from __future__ import annotations
 
@@ -411,8 +411,11 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
     # 기준 문장
     p.append("<h2>기준 문장 (학습 전 판단에 쓰는 문장)</h2>")
     p.append("<p class=\"legend\">파일: <code>%s</code> · 글마다 이 문장들 가운데 어느 문장에 가장 가까운지를 따져, <span class=\"plus\">+</span> 문장 쪽으로 기운 정도를 0~1 점수로 냅니다. "
-             "임베딩 모델은 글과 문장의 비슷한 정도로, 문장 판별 모델은 그 문장이 글에 대해 맞을 가능성으로 따집니다. "
-             "오른쪽 숫자는 그 문장에 가장 가까웠던 덩어리의 수입니다(한 번도 뽑히지 않는 문장은 하는 일이 없는 문장입니다).</p>" % esc(str(res.sentences_file)))
+             "%s"
+             "오른쪽 숫자는 그 문장에 가장 가까웠던 덩어리의 수입니다(한 번도 뽑히지 않는 문장은 하는 일이 없는 문장입니다).</p>" % (
+                 esc(str(res.sentences_file)),
+                 "임베딩 모델은 글과 문장의 비슷한 정도로, 문장 판별 모델은 그 문장이 글에 대해 맞을 가능성으로 따집니다. "
+                 if any(r.spec["kind"] == "nli" for r in runs) else "글과 문장을 각각 숫자 묶음으로 바꿔 비슷한 정도로 따집니다. "))
     p.append("<div class=\"wrap\"><table class=\"sum\"><tr><th>이름</th><th>뜻</th><th>문장</th>%s</tr>" % "".join(
         "<th>%s</th>" % esc(r.spec["label"]) for r in runs))
     blocks = res.blocks

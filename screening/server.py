@@ -92,7 +92,7 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 <div class="box" id="tb" hidden><b id="tt">계산 중입니다…</b><span class="msg" id="tl"></span><pre class="log" id="tlog"></pre></div>
 <details class="box" id="sd"><summary>기준 문장 보기·고치기 (정답 없이 판단할 때 쓰는 문장)</summary>
 <p class="legend"><b>+</b> 로 시작하는 줄은 검토가 <b>필요한</b> 글을 나타내는 문장, <b>-</b> 로 시작하는 줄은 <b>필요 없는</b> 글을 나타내는 문장입니다. <b>#</b> 로 시작하는 줄은 메모입니다.
-고친 뒤 저장하고 '학습하고 결과 보기'를 누르면 반영됩니다. 문장을 바꾸면 바뀐 문장만큼 모델을 다시 돌리므로 시간이 걸립니다(문장 판별 모델이 가장 오래 걸립니다).
+고친 뒤 저장하고 '학습하고 결과 보기'를 누르면 반영됩니다. 바뀐 문장만 다시 계산하므로 오래 걸리지 않습니다.
 비교 화면에 <b>고치기 전 → 고친 뒤</b>의 수치 변화가 나옵니다. 파일: <span id="sf"></span></p>
 <textarea id="st" spellcheck="false"></textarea>
 <button id="ss">기준 문장 저장</button><span class="msg" id="sm"></span></details>
@@ -182,7 +182,7 @@ function showW(w){$('ow').textContent=w>0?('켜짐, 비율 '+w+' (글 '+Math.rou
 $('os').addEventListener('click',function(){var m=$('om');m.className='msg';m.textContent='저장 중…';
   post('/options',{title_weight:$('oi').value}).then(function(j){showW(j.title_weight);$('oi').value=j.title_weight;m.className='msg ok';m.textContent='저장했습니다. \'학습하고 결과 보기\'를 누르면 반영됩니다.'})
   .catch(function(e){m.className='msg bad';m.textContent=e.message})});
-$('train').addEventListener('click',function(){var b=$('train');b.disabled=true;$('tb').hidden=false;$('tt').textContent='계산 중입니다… (처음이거나 기준 문장을 바꿨으면 몇 분 걸립니다. label.bat 창에 진행 상황이 나옵니다)';
+$('train').addEventListener('click',function(){var b=$('train');b.disabled=true;$('tb').hidden=false;$('tt').textContent='계산 중입니다… (처음 계산하는 글이 있으면 시간이 걸립니다. label.bat 창에 진행 상황과 남은 시간이 나옵니다)';
   $('tl').innerHTML='';$('tlog').textContent='';window.scrollTo(0,0);
   post('/train',{}).then(function(j){$('tt').textContent='끝났습니다.';$('tl').innerHTML='<a href="'+j.index+'" target="_blank"><b>비교 화면 열기</b></a>';$('tlog').textContent=j.log;
     window.open(j.index,'_blank');return load(true)})

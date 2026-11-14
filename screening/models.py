@@ -1,7 +1,8 @@
-"""비교할 모델 네 가지를 내려받고 실행한다. 한 번 계산한 결과는 파일에 남겨 다시 계산하지 않는다.
+"""비교할 모델을 내려받고 실행한다. 한 번 계산한 결과는 파일에 남겨 다시 계산하지 않는다.
 
-    임베딩 모델       글을 숫자 묶음(벡터)으로 바꾼다. bge-m3, KURE-v1, multilingual-e5-small
+    임베딩 모델       글을 숫자 묶음(벡터)으로 바꾼다. bge-m3, KURE-v1, multilingual-e5-small  (기본으로 도는 세 가지)
     문장 판별 모델    글과 문장을 함께 받아 그 문장이 글에 대해 맞는지를 따진다. bge-m3-zeroshot-v2.0-c
+                      글 하나를 기준 문장 수만큼 돌려야 해서 느리다. 4.1부터 기본에서 뺐고, --models 에 이름을 적을 때만 돈다.
 
 모두 MIT 라이선스이고 PC 안에서만 돈다. 모델 파일은 처음 한 번 Hugging Face에서 내려받아 models 폴더에 둔다.
 """
@@ -25,9 +26,11 @@ MODELS = [
     {"key": "me5-small", "label": "multilingual-e5-small", "repo": "intfloat/multilingual-e5-small", "kind": "embed",
      "prefix": "query: ", "temp": 0.02, "size": "약 0.5GB", "note": "작고 빠른 다국어 임베딩"},
     {"key": "bge-m3-zeroshot", "label": "bge-m3-zeroshot-v2.0-c", "repo": "MoritzLaurer/bge-m3-zeroshot-v2.0-c", "kind": "nli",
-     "size": "약 1.1GB", "note": "문장 판별 모델. 정답 예시로 학습시키지 않고 기준 문장만으로 판단. 글 하나를 기준 문장 수만큼 돌린다(쌍)"},
+     "size": "약 1.1GB", "note": "문장 판별 모델. 정답 예시로 학습시키지 않고 기준 문장만으로 판단. 글 하나를 기준 문장 수만큼 돌린다(쌍)",
+     "default": False},                            # 느려서 기본에서 뺌. 이름을 적어 줄 때만 돈다
 ]
 MODEL_BY_KEY = {m["key"]: m for m in MODELS}
+DEFAULT_MODELS = [m for m in MODELS if m.get("default", True)]
 
 # 내려받지 않을 파일: 다른 실행 방식용 사본과 그림 등 (용량만 차지한다)
 SKIP = ["onnx/*", "openvino/*", "imgs/*", "*.onnx", "*.onnx_data", "*.jpg", "*.png", "*.webp", "*.h5", "*.ot", "*.msgpack",
@@ -113,9 +116,37 @@ class Store:
         self.dirty = False
 
 
-def _progress(log: Callable[[str], None], done: int, total: int, t0: float) -> None:
+def _time_left(seconds: float) -> str:
+    if seconds < 60:
+        return "약 %d초" % max(1, int(round(seconds)))
+    if seconds < 3600:
+        return "약 %d분" % max(1, int(round(seconds / 60.0)))
+    return "약 %d시간 %d분" % (int(seconds // 3600), int(seconds % 3600 // 60))
+
+
+def _work(text: str, max_len: int) -> float:
+    """글 하나를 계산하는 데 드는 품의 어림(글자 수 단위).
+
+    재 보니 걸리는 시간은 '글 하나마다의 고정 몫 + 글자 수에 비례하는 몫'으로 잘 맞았고(어긋남 4~9%),
+    고정 몫은 글자 23~27개만큼이었다. 모델에 넣는 길이(max_len 토큰, 글자로는 그 1.7배쯤)를 넘는 부분은 잘린다.
+    """
+    return min(len(text), int(1.7 * max_len)) + 25.0
+
+
+def _left(mark: Optional[tuple], work_done: float, work_total: float) -> str:
+    """남은 예상 시간. 짧은 글부터 계산해서 뒤로 갈수록 느려지므로, 개수가 아니라 품으로 어림한다.
+
+    mark: (첫 묶음을 마친 시각, 그때까지의 품). 첫 묶음은 모델이 몸을 푸느라 느려서 빠르기를 잴 때 뺀다.
+    """
+    if mark is None or work_done <= mark[1] or work_total <= work_done:
+        return ""
+    return ", %s 남음" % _time_left((time.time() - mark[0]) * (work_total - work_done) / (work_done - mark[1]))
+
+
+def _progress(log: Callable[[str], None], done: int, total: int, t0: float, word: str = "개", left: str = "") -> None:
+    """진행 줄: 계산한 수 / 전체 (퍼센트, 속도, 남은 예상 시간)."""
     dt = max(time.time() - t0, 1e-6)
-    log("    %d / %d  (1초에 %.1f개)" % (done, total, done / dt))
+    log("    %d / %d  (%d%%, 1초에 %.1f%s%s)" % (done, total, int(100 * done / max(total, 1)), done / dt, word, left))
 
 
 # ---------------------------------------------------------------- 임베딩 모델
@@ -134,15 +165,21 @@ def embed(spec: dict, path: Path, texts: List[str], cache: Store, max_len: int, 
         model.float()                              # 절반 정밀도로 저장된 모델은 CPU에서 몇 배 느리다. 항상 32비트로 돌린다
         model.max_seq_length = max_len
         order = sorted(todo, key=lambda k: len(todo[k]))          # 길이가 비슷한 글끼리 묶으면 빠르다
-        t0 = time.time()
+        work_total, work_done = float(sum(_work(todo[k], max_len) for k in order)), 0.0
+        if len(order) > 160:
+            log("    새로 계산할 글 %d개 (160개마다 진행 상황을 알리고 저장합니다)" % len(order))
+        t0, mark = time.time(), None
         for a in range(0, len(order), 32):
             part = order[a:a + 32]
             vecs = model.encode([spec["prefix"] + todo[k] for k in part], batch_size=8, normalize_embeddings=True,
                                 show_progress_bar=False, convert_to_numpy=True)
             for k, v in zip(part, vecs):
                 cache.put(k, v)
+            work_done += sum(_work(todo[k], max_len) for k in part)
+            if mark is None:
+                mark = (time.time(), work_done)
             if (a // 32) % 5 == 4 or a + 32 >= len(order):
-                _progress(log, min(a + 32, len(order)), len(order), t0)
+                _progress(log, min(a + 32, len(order)), len(order), t0, "개", _left(mark, work_done, work_total))
                 cache.save()
         seconds = time.time() - t0
         del model
@@ -179,7 +216,10 @@ def nli(path: Path, texts: List[str], sentences: List[str], cache: Store, max_le
         no = next((v for k, v in names.items() if k.startswith("contra")),
                   next((v for k, v in names.items() if k.startswith("not")), 1 if yes == 0 else 0))
         order = sorted(todo, key=lambda k: len(todo[k][0]))
-        t0 = time.time()
+        work_total, work_done = float(sum(_work(todo[k][0] + todo[k][1], max_len) for k in order)), 0.0
+        if len(order) > 160:
+            log("    새로 계산할 쌍 %d개 (글 × 기준 문장. 160쌍마다 진행 상황을 알리고 저장합니다)" % len(order))
+        t0, mark = time.time(), None
         for a in range(0, len(order), 8):
             part = order[a:a + 8]
             enc = tok([todo[k][0] for k in part], [todo[k][1] for k in part], truncation="only_first", max_length=max_len,
@@ -188,8 +228,11 @@ def nli(path: Path, texts: List[str], sentences: List[str], cache: Store, max_le
                 logits = model(**enc).logits.float().numpy()
             for k, row in zip(part, logits):
                 cache.put(k, np.array([row[yes], row[no]], dtype=np.float32))
+            work_done += sum(_work(todo[k][0] + todo[k][1], max_len) for k in part)
+            if mark is None:
+                mark = (time.time(), work_done)
             if (a // 8) % 20 == 19 or a + 8 >= len(order):
-                _progress(log, min(a + 8, len(order)), len(order), t0)
+                _progress(log, min(a + 8, len(order)), len(order), t0, "쌍", _left(mark, work_done, work_total))
                 cache.save()
         seconds = time.time() - t0
         del model
@@ -231,8 +274,9 @@ def default_models_dir(root: Path) -> Path:
 
 
 def pick_models(names: Optional[str]) -> List[dict]:
+    """돌릴 모델. 이름을 주지 않으면 기본 세 가지(임베딩 모델)."""
     if not names:
-        return list(MODELS)
+        return list(DEFAULT_MODELS)
     wanted = [n.strip() for n in names.split(",") if n.strip()]
     unknown = [n for n in wanted if n not in MODEL_BY_KEY]
     if unknown:
