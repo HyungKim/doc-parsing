@@ -101,6 +101,7 @@ def execute(cfg: Config, log: Callable[[str], None]) -> Tuple[object, Path]:
         raise SystemExit("[오류] 돌릴 수 있는 모델이 없습니다. install_screen.bat 을 실행했는지 확인해 주세요.\n" +
                          "\n".join("       %s: %s" % (r.spec["label"], r.error) for r in res.runs))
     run.write_scores(res, Path(cfg.out_dir) / "screen" / "scores.json")
+    run.write_thresholds(res, Path(cfg.labels).parent / "classifiers" / "thresholds.json")
     # 학습 기록: 이번 결과를 지금 화면(out/screen)과, 기록 폴더(out/screen/history/번호_때)에 함께 만든다
     from . import history
     entries, entry, is_new = history.prepare(res)

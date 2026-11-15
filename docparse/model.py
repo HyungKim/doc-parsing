@@ -92,6 +92,8 @@ class OutBlock:
     flat_mode: str = ""                      # keyvalue: 풀어 씀 | pipe: 머리글이 분명하지 않아 칸 구분으로 둠
     flat_reason: str = ""
     table: Optional[dict] = None             # {"rows", "cols", "cells": [(r, c, rowspan, colspan, text)]}
+    # 적힌 줄마다, 그 줄을 이룬 원래 줄들의 자리(0~1). 원본에 표시할 때만 쓰고 결과 파일에는 적지 않는다. 모르면 빈 목록
+    line_rows: List[list] = field(default_factory=list)
 
 
 @dataclass

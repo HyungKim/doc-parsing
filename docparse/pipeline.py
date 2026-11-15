@@ -74,6 +74,17 @@ def _norm_box(b: Block, page) -> tuple:
     return (clamp(b.x0 / w), clamp(b.y0 / h), clamp(b.x1 / w), clamp(b.y1 / h))
 
 
+def _line_rows(b: Block, page) -> list:
+    """적힌 줄마다, 그 줄을 이룬 원래 줄 하나하나의 자리. 글 내용은 건드리지 않는다. 알 수 없으면 빈 목록."""
+    groups = getattr(b, "line_groups", None) or []
+    if b.kind != "text" or len(groups) != len(b.text.split("\n")):
+        return []
+    try:
+        return [[_span_box([l], page) for l in g] for g in groups]
+    except Exception:
+        return []
+
+
 def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                 extra_keywords=None, order_log: Optional[list] = None,
                 min_chars: int = MIN_CHARS, need_korean: bool = True) -> List[PageOut]:
@@ -127,15 +138,19 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                 texts = b.text.split("\n")
                 groups = getattr(b, "line_groups", None) or []
                 keep = []
+                kept_groups = []                   # 남긴 줄마다의 원래 줄들 (원본에 표시할 자리를 찾는 데 쓴다)
                 for k, t in enumerate(texts):
                     why = drop_reason(t, min_chars, need_korean)
                     if not why:
                         keep.append(t)
+                        if len(groups) == len(texts):
+                            kept_groups.append(groups[k])
                         continue
                     out.removed.append((t, why))
                     box = _span_box(groups[k], page) if len(groups) == len(texts) else _norm_box(b, page)
                     out.removed_boxes.append((box, why, t))
                 b.text = "\n".join(keep)
+                b.line_groups = kept_groups        # type: ignore[attr-defined]
             rest = [b for b in rest if b.text]
         # 돌려 쓴 글(축 제목, 옆면 주석)은 본문 흐름에 끼지 않도록 맨 뒤로 보낸다
         turned = [b for b in rest if b.lines and abs(b.lines[0].angle) >= 3.0]
@@ -147,6 +162,7 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
             ob = OutBlock(text=b.text, box=_norm_box(b, page), kind=b.kind)
             ob.over_table = b.kind == "text" and any(l.overlay for l in b.lines)
             ob.style_breaks = sum(1 for l in b.lines if l.style_break and not l.removed) if b.kind == "text" else 0
+            ob.line_rows = _line_rows(b, page)
             if b.kind == "table":
                 try:
                     info = tables.describe(b)

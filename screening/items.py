@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def text_key(text: str) -> str:
@@ -66,6 +66,35 @@ class DocItems:
         return [l for b in self.blocks for l in b.lines]
 
 
+def doc_from_units(data: dict, units_file: str) -> Optional[DocItems]:
+    """단위 파일의 내용(dict) 하나를 걸러내기가 다루는 문서로 바꾼다. 덩어리가 하나도 없으면 None"""
+    units = data.get("units") or {}
+    name = data.get("file") or units_file[:-len(".units.json")]
+    doc = DocItems(name=name, kind=data.get("kind", ""), units_file=units_file,
+                   report_file=units_file[:-len(".units.json")] + ".html")
+    blocks: Dict[tuple, BlockItem] = {}
+    for u in units.get("block", []):
+        if u.get("kind") == "title" or not (u.get("text") or "").strip():
+            continue
+        b = BlockItem(uid="%s#%s" % (name, u["id"]), id=u["id"], page=int(u.get("page", 0)), number=int(u.get("block", 0)),
+                      kind=u.get("kind", "text"), title=u.get("title", ""), text=u["text"],
+                      table_form=u.get("table_form", ""), over_table=bool(u.get("over_table")))
+        blocks[(b.page, b.number)] = b
+        doc.blocks.append(b)
+    for u in units.get("line", []):
+        if u.get("kind") == "title" or not (u.get("text") or "").strip():
+            continue
+        b = blocks.get((int(u.get("page", 0)), int(u.get("block", 0))))
+        if b is None:
+            continue
+        b.lines.append(LineItem(uid="%s#%s" % (name, u["id"]), id=u["id"], number=int(u.get("line", 0)), text=u["text"]))
+    for b in doc.blocks:
+        if not b.lines:                        # 줄 목록이 없는 덩어리는 덩어리 글을 줄로 나눠 채운다
+            for k, t in enumerate([t for t in b.text.split("\n") if t.strip()], 1):
+                b.lines.append(LineItem(uid="%s-l%d" % (b.uid, k), id="%s-l%d" % (b.id, k), number=k, text=t))
+    return doc if doc.blocks else None
+
+
 def load_docs(out_dir: Path) -> List[DocItems]:
     """out 폴더의 단위 파일을 모두 읽는다."""
     docs: List[DocItems] = []
@@ -74,30 +103,7 @@ def load_docs(out_dir: Path) -> List[DocItems]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        units = data.get("units") or {}
-        name = data.get("file") or path.name[:-len(".units.json")]
-        doc = DocItems(name=name, kind=data.get("kind", ""), units_file=path.name,
-                       report_file=path.name[:-len(".units.json")] + ".html")
-        blocks: Dict[tuple, BlockItem] = {}
-        for u in units.get("block", []):
-            if u.get("kind") == "title" or not (u.get("text") or "").strip():
-                continue
-            b = BlockItem(uid="%s#%s" % (name, u["id"]), id=u["id"], page=int(u.get("page", 0)), number=int(u.get("block", 0)),
-                          kind=u.get("kind", "text"), title=u.get("title", ""), text=u["text"],
-                          table_form=u.get("table_form", ""), over_table=bool(u.get("over_table")))
-            blocks[(b.page, b.number)] = b
-            doc.blocks.append(b)
-        for u in units.get("line", []):
-            if u.get("kind") == "title" or not (u.get("text") or "").strip():
-                continue
-            b = blocks.get((int(u.get("page", 0)), int(u.get("block", 0))))
-            if b is None:
-                continue
-            b.lines.append(LineItem(uid="%s#%s" % (name, u["id"]), id=u["id"], number=int(u.get("line", 0)), text=u["text"]))
-        for b in doc.blocks:
-            if not b.lines:                        # 줄 목록이 없는 덩어리는 덩어리 글을 줄로 나눠 채운다
-                for k, t in enumerate([t for t in b.text.split("\n") if t.strip()], 1):
-                    b.lines.append(LineItem(uid="%s-l%d" % (b.uid, k), id="%s-l%d" % (b.id, k), number=k, text=t))
-        if doc.blocks:
+        doc = doc_from_units(data, path.name)
+        if doc is not None:
             docs.append(doc)
     return docs

@@ -70,6 +70,10 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 .ln.cur{background:var(--cur)}
 .ln.y{border-left-color:var(--yes)}
 .ln.n{border-left-color:var(--no)}
+.ln.q{border-left-color:#e0a100}
+#todo{font-weight:700}
+#todo.none{font-weight:400;color:var(--mute)}
+table.docs button.find{font-size:12px;padding:0 8px;margin-left:6px}
 .ln.n .t{color:var(--mute)}
 .ln .t{flex:1;white-space:pre-wrap;word-break:break-word;min-width:0}
 .scs{display:inline-flex;gap:2px;white-space:nowrap}
@@ -98,6 +102,7 @@ table.docs td.st2{color:var(--yes);font-weight:700}
 <label>보기 <select id="show"><option value="all">전체</option><option value="todo">정답이 덜 붙은 덩어리만</option><option value="yes">정답 '예'가 있는 덩어리만</option></select></label>
 <label>순서 <select id="sort"><option value="doc">문서 순서</option><option value="high">점수 높은 순</option><option value="mid">헷갈리는 순 (0.5에 가까운)</option></select></label>
 <label id="mw">순서를 정하는 모델 <select id="model"></select></label>
+<button id="todo" title="지금 줄 다음부터, 아직 정답을 붙이지 않은 줄로 갑니다 (키보드 U)">안 붙인 줄 찾기</button>
 <span id="prog"></span>
 <button class="main" id="train">학습하고 결과 보기</button>
 <a href="/out/screen/history.html" target="_blank" title="학습할 때마다 저장해 둔 결과">학습 기록</a>
@@ -122,7 +127,8 @@ table.docs td.st2{color:var(--yes);font-weight:700}
 <label>비율 <input id="oi" type="number" min="0" max="0.9" step="0.05" style="width:80px"></label>
 <button id="os">저장</button><span class="msg" id="om"></span></details>
 <p class="legend" id="sk"></p>
-<p class="legend">키보드: <kbd>↑</kbd><kbd>↓</kbd> 줄 이동 · <kbd>Y</kbd> 예 · <kbd>N</kbd> 아니오 (누르면 다음 줄로 넘어갑니다) · <kbd>X</kbd> 지우기 · <kbd>A</kbd> 이 덩어리의 남은 줄 모두 아니오.
+<p class="legend">키보드: <kbd>↑</kbd><kbd>↓</kbd> 줄 이동 · <kbd>Y</kbd> 예 · <kbd>N</kbd> 아니오 (누르면 다음 줄로 넘어갑니다) · <kbd>X</kbd> 지우기 · <kbd>A</kbd> 이 덩어리의 남은 줄 모두 아니오 · <kbd>U</kbd> 아직 안 붙인 줄로 가기.
+줄 왼쪽의 띠는 <b style="color:var(--yes)">초록</b>이 예, <b style="color:var(--no)">회색</b>이 아니오, <b style="color:#e0a100">주황</b>이 아직 안 붙인 줄입니다. 빠뜨린 줄은 위 막대의 <b>안 붙인 줄 찾기</b>를 누르면 차례로 찾아갑니다.
 덩어리의 정답은 줄에서 따옵니다: 줄 하나라도 '예'면 덩어리도 '예', 모든 줄이 '아니오'면 덩어리도 '아니오'. 같은 글은 어느 문서에 있든 한 번만 붙이면 됩니다.
 수치를 공정하게 재려면 점수가 높은 것만 골라 붙이지 말고 <b>한 쪽이나 한 문서를 통째로</b> 붙이는 것이 좋습니다.</p>
 <div id="list"></div><button id="more" hidden>더 보기</button>
@@ -134,7 +140,7 @@ function docCounts(d){var y=0,n=0,t=0;d.blocks.forEach(function(b){b.lines.forEa
 function docTable(){var sel=$('doc').value;
   $('dt').innerHTML='<tr><th>문서</th><th>줄</th><th>예</th><th>아니오</th><th>남음</th><th>상태</th><th>시험용</th><th></th></tr>'+D.docs.map(function(d,i){
     var c=docCounts(d),left=c.t-c.y-c.n,st=(c.y+c.n===0)?0:(left===0?2:1);
-    return '<tr class="'+(String(i)===sel?'on':'')+'"><td>'+esc(d.name)+'</td><td class="n">'+c.t+'</td><td class="n">'+c.y+'</td><td class="n">'+c.n+'</td><td class="n">'+left+'</td>'+
+    return '<tr class="'+(String(i)===sel?'on':'')+'"><td>'+esc(d.name)+'</td><td class="n">'+c.t+'</td><td class="n">'+c.y+'</td><td class="n">'+c.n+'</td><td class="n">'+left+(left?'<button class="find" data-i="'+i+'" title="이 문서에서 아직 안 붙인 줄로 갑니다">찾기</button>':'')+'</td>'+
       '<td class="st'+st+'">'+['안 붙임','붙이는 중','다 붙임'][st]+'</td><td class="c"><input type="checkbox" class="tst" data-i="'+i+'"'+(T[d.name]?' checked':'')+'></td>'+
       '<td><button class="go" data-i="'+i+'">'+(String(i)===sel?'지금 붙이는 문서':'이 문서 붙이기')+'</button></td></tr>'}).join('')}
 function $(id){return document.getElementById(id)}
@@ -153,8 +159,21 @@ function scoreKey(){var ms=D.scores?D.scores.models:[],sel=$('model').value;
 function blockState(b){var y=0,n=0;b.lines.forEach(function(l){var v=L[l.key];if(v===1)y++;else if(v===0)n++});
   if(y)return['y','정답 예'];if(n===b.lines.length)return['n','정답 아니오'];return['q',n?('덜 붙음 '+n+'/'+b.lines.length):'정답 없음']}
 function progress(){var y=0,n=0,t=0,by=0,bn=0;D.docs.forEach(function(d){d.blocks.forEach(function(b){var s=blockState(b)[0];if(s==='y')by++;else if(s==='n')bn++;
-  b.lines.forEach(function(l){t++;var v=L[l.key];if(v===1)y++;else if(v===0)n++})})});
+  b.lines.forEach(function(l){t++;var v=L[l.key];if(v===1)y++;else if(v===0)n++})})});todoButton();
   $('prog').innerHTML='전체 줄 '+t+'개 · <b class="y">예 '+y+'</b> · 아니오 '+n+' · 남음 '+(t-y-n)+' <span class="sub">(덩어리: 예 '+by+' · 아니오 '+bn+')</span>';docTable()}
+function todoLeft(){var di=$('doc').value,n=0;D.docs.forEach(function(d,i){if(di!=='all'&&String(i)!==di)return;
+  d.blocks.forEach(function(b){b.lines.forEach(function(l){if(L[l.key]==null)n++})})});return n}
+function todoButton(){var n=todoLeft(),b=$('todo');b.textContent=n?('안 붙인 줄 찾기 ('+n+'개 남음)'):'안 붙인 줄 없음';b.classList.toggle('none',!n)}
+function nextTodo(){
+  if($('show').value==='yes'){$('show').value='all';render()}      // 가려진 덩어리에 남아 있을 수 있어 모두 보이게 한다
+  var n=blocks.length,bi=-1,li=-1,found=null;
+  if(cur){bi=+cur.parentNode.dataset.i;li=Array.prototype.indexOf.call(cur.parentNode.querySelectorAll('.ln'),cur)}
+  for(var s=0;s<=n&&!found&&n;s++){var i=(Math.max(bi,0)+s)%n,ls=blocks[i].b.lines;
+    for(var j=(s===0&&bi>=0)?li+1:0;j<ls.length;j++){if(L[ls[j].key]==null){found=[i,j];break}}}
+  if(!found){var el=$('err');el.textContent='이 문서에는 정답을 안 붙인 줄이 없습니다.';el.style.display='block';setTimeout(function(){el.style.display='none'},2500);return}
+  while(shown<=found[0]&&shown<blocks.length)more();
+  var blk=$('list').querySelector('.blk[data-i="'+found[0]+'"]'),row=blk?blk.querySelectorAll('.ln')[found[1]]:null;
+  if(row){setCur(row,false);row.scrollIntoView({block:'center'})}}
 function pick(){var di=$('doc').value,show=$('show').value,sort=$('sort').value,out=[];
   D.docs.forEach(function(d,i){if(di!=='all'&&String(i)!==di)return;d.blocks.forEach(function(b){
     var s=blockState(b)[0],todo=b.lines.some(function(l){return L[l.key]==null});
@@ -163,7 +182,7 @@ function pick(){var di=$('doc').value,show=$('show').value,sort=$('sort').value,
     out.sort(function(a,b){return b.v-a.v})}
   return out}
 function lineHtml(l){var v=L[l.key];
-  return '<div class="ln'+(v===1?' y':v===0?' n':'')+'" data-key="'+l.key+'"><button class="by">예</button><button class="bn">아니오</button>'+
+  return '<div class="ln'+(v===1?' y':v===0?' n':' q')+'" data-key="'+l.key+'"><button class="by">예</button><button class="bn">아니오</button>'+
     '<span class="t">'+esc(l.text)+'</span>'+scoreCells('line',l.key)+'</div>'}
 function blockHtml(x,i){var b=x.b,st=blockState(b);
   return '<div class="blk" data-i="'+i+'"><div class="hd"><code>'+esc(b.id)+'</code><span class="wh" title="'+esc(b.title||'')+'">'+esc(x.d.name)+' · '+b.page+'쪽'+(b.title?' · '+esc(b.title):'')+'</span>'+
@@ -172,13 +191,13 @@ function blockHtml(x,i){var b=x.b,st=blockState(b);
     '<a href="/out/'+encodeURIComponent(x.d.report)+'#p'+b.page+'" target="_blank">추출 화면에서 보기</a><span class="sp"></span>'+
     '<button class="allno">남은 줄 모두 아니오</button><button class="clr">지우기</button></div>'+b.lines.map(lineHtml).join('')+'</div>'}
 function index(el){el.querySelectorAll('.ln').forEach(function(r){(rows[r.dataset.key]=rows[r.dataset.key]||[]).push(r)})}
-function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';docTable();scoreKey();more();
+function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';docTable();todoButton();scoreKey();more();
   if(!blocks.length)$('list').innerHTML='<p class="legend">보여 줄 덩어리가 없습니다.</p>'}
 function more(){var part=blocks.slice(shown,shown+STEP),box=document.createElement('div');
   box.innerHTML=part.map(function(x,k){return blockHtml(x,shown+k)}).join('');index(box);
   while(box.firstChild)$('list').appendChild(box.firstChild);shown+=part.length;
   $('more').hidden=shown>=blocks.length;$('more').textContent='더 보기 ('+(blocks.length-shown)+'개 남음)'}
-function paint(key){(rows[key]||[]).forEach(function(r){var v=L[key];r.classList.toggle('y',v===1);r.classList.toggle('n',v===0);
+function paint(key){(rows[key]||[]).forEach(function(r){var v=L[key];r.classList.toggle('y',v===1);r.classList.toggle('n',v===0);r.classList.toggle('q',v==null);
   var blk=r.parentNode,x=blocks[+blk.dataset.i],st=blockState(x.b),tag=blk.querySelector('.st');tag.className='st '+st[0];tag.textContent=st[1]})}
 function save(items){var old=items.map(function(it){return L[it.key]});
   items.forEach(function(it){if(it.label==null)delete L[it.key];else L[it.key]=it.label;paint(it.key)});progress();
@@ -205,10 +224,14 @@ document.addEventListener('keydown',function(e){var tag=(e.target.tagName||'').t
   else if(cur&&(k==='y'||k==='ㅛ')){var l=lineOf(cur);save([{key:l.key,label:1,text:l.text}]);step(1)}
   else if(cur&&(k==='n'||k==='ㅜ')){var m=lineOf(cur);save([{key:m.key,label:0,text:m.text}]);step(1)}
   else if(cur&&(k==='x'||k==='ㅌ')){var c=lineOf(cur);save([{key:c.key,label:null,text:c.text}])}
-  else if(cur&&(k==='a'||k==='ㅁ')){allNo(cur.parentNode)}});
+  else if(cur&&(k==='a'||k==='ㅁ')){allNo(cur.parentNode)}
+  else if(k==='u'||k==='ㅕ'){nextTodo();e.preventDefault()}});
 ['doc','show','sort','model'].forEach(function(id){$(id).addEventListener('change',render)});
 $('more').addEventListener('click',more);
-$('dt').addEventListener('click',function(e){var t=e.target;if(!t.classList.contains('go'))return;$('doc').value=t.dataset.i;render();
+$('todo').addEventListener('click',nextTodo);
+$('dt').addEventListener('click',function(e){var t=e.target;
+  if(t.classList.contains('find')){$('doc').value=t.dataset.i;render();nextTodo();return}
+  if(!t.classList.contains('go'))return;$('doc').value=t.dataset.i;render();
   document.querySelector('.bar').scrollIntoView()});
 $('dt').addEventListener('change',function(e){var t=e.target;if(!t.classList.contains('tst'))return;var d=D.docs[+t.dataset.i];
   if(t.checked)T[d.name]=1;else delete T[d.name];var m=$('tm');m.className='msg';m.textContent=' 저장 중…';

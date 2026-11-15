@@ -538,6 +538,28 @@ def save_classifier(path: Path, spec: dict, unit: str, trained: dict, kind: str 
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def write_thresholds(res: Result, path: Path) -> None:
+    """모델 × 보는 방식마다 '예'의 target을 찾던 문턱값을 남긴다. 표시하기(mark.py) 화면에서 문턱으로 고를 수 있게 하려는 것이다.
+
+    시험용이 아닌 문서의 정답으로 구한 값이다(학습 후 값은 그 글을 빼고 학습시킨 분류기의 점수로 구함). 쪽 제목 반영이 켜져 있으면 섞은 점수 기준이다.
+    """
+    data = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "target": res.target, "title_weight": res.title_weight, "models": {}}
+    for r in res.runs:
+        if not r.ok:
+            continue
+        per = {}
+        for view, _ in VIEWS:
+            m = r.metrics.get(view) or {}
+            got = {when: round(float(m[when]["tuned"]["threshold"]), 4) for when in ("before", "after")
+                   if m.get(when) and m[when].get("tuned") and m[when]["tuned"].get("threshold") is not None}
+            if got:
+                per[view] = got
+        if per:
+            data["models"][r.key] = per
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 def write_scores(res: Result, path: Path) -> None:
     """항목마다의 점수를 자료로 남긴다(정답 붙이는 화면과 다음 단계에서 쓴다)."""
     ok = [r for r in res.runs if r.ok]
