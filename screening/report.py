@@ -52,8 +52,24 @@ table.sc td.t{white-space:pre-wrap;word-break:break-word}
 .steps li{margin:2px 0}
 details.box>summary{cursor:pointer}
 table.sum.num td,table.sum.num th{white-space:nowrap}
-.viz{--s1:#2a78d6}
-@media (prefers-color-scheme:dark){.viz{--s1:#3987e5}}
+.viz{--s1:#2a78d6;--s2:#eb6834}
+@media (prefers-color-scheme:dark){.viz{--s1:#3987e5;--s2:#d95926}}
+.note{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:6px;padding:8px 14px;margin:10px 0;max-width:1100px}
+.note.old{border-left-color:#a15c00}
+.trend{display:inline-block;vertical-align:top;margin:4px 18px 10px 0}
+.trend h4{margin:0 0 2px;font-size:13px}
+.trend svg text{fill:var(--mute);font-size:11px}
+.trend svg text.lab{fill:var(--ink);font-size:11.5px}
+.trend svg .grid{stroke:var(--line);stroke-width:1}
+.trend svg .l1{stroke:var(--s1);fill:none;stroke-width:2}
+.trend svg .l2{stroke:var(--s2);fill:none;stroke-width:2}
+.trend svg .p1{fill:var(--s1);stroke:var(--card);stroke-width:1.5}
+.trend svg .p2{fill:var(--s2);stroke:var(--card);stroke-width:1.5}
+.key .sw1,.key .sw2{display:inline-block;width:16px;height:3px}
+.key .sw1{background:var(--s1)}.key .sw2{background:var(--s2)}
+table.sum td small.up{color:var(--tt-ink);font-weight:700}
+table.sum td small.down{color:var(--rm-ink);font-weight:700}
+table.sum tr.now td{background:rgba(31,95,191,.06)}
 table.viz{border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;margin:8px 0;font-size:13px}
 table.viz th,table.viz td{padding:4px 10px;text-align:left;vertical-align:middle;white-space:nowrap}
 table.viz th{color:var(--mute);font-weight:600;font-size:12px;border-bottom:1px solid var(--line)}
@@ -214,7 +230,8 @@ def _title_line(runs: List[ModelRun], title: str) -> str:
     return "<div class=\"sub\" style=\"margin:-2px 0 6px\">제목 점수: %s</div>" % " · ".join(parts) if parts else ""
 
 
-def write_doc(res: Result, doc: DocItems, path: Path) -> None:
+def write_doc(res: Result, doc: DocItems, path: Path, up: str = "../") -> None:
+    """up: 이 화면이 놓이는 폴더에서 추출 결과 폴더(out)까지 올라가는 길."""
     runs = [r for r in res.runs if r.ok]
     parts = ["<style>%s</style>" % CSS]
     is_test = doc.name in res.test_names
@@ -244,8 +261,8 @@ def write_doc(res: Result, doc: DocItems, path: Path) -> None:
             if page is not None:
                 parts.append("</section>")
             page = b.page
-            parts.append("<section class=\"pgs\"><h3 class=\"pg\">%d쪽%s · <a href=\"../%s#p%d\">추출 리포트에서 보기</a></h3>" % (
-                page, " · 제목: " + esc(b.title) if b.title else "", esc(doc.report_file), page))
+            parts.append("<section class=\"pgs\"><h3 class=\"pg\">%d쪽%s · <a href=\"%s%s#p%d\">추출 리포트에서 보기</a></h3>" % (
+                page, " · 제목: " + esc(b.title) if b.title else "", up, esc(doc.report_file), page))
             if res.title_weight and b.title:
                 parts.append(_title_line(runs, b.title))
         parts.append(_block_html(res, runs, b))
@@ -787,13 +804,14 @@ def _test_section(res: Result, runs: List[ModelRun], target: str) -> str:
     return "".join(p)
 
 
-def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
+def write_index(res: Result, path: Path, doc_files: dict, root: Path, up: str = "../", note: str = "") -> None:
+    """up: 이 화면이 놓이는 폴더에서 추출 결과 폴더(out)까지 올라가는 길.  note: 맨 위에 넣을 안내(학습 기록)"""
     c = res.counts()
     runs = [r for r in res.runs if r.ok]
     has_labels = (c["line_yes"] + c["line_no"]) > 0
     trained = any(r.after["block"] is not None or r.after["line"] is not None for r in runs)
     target = "%.0f%%" % (100 * res.target)
-    p = ["<style>%s</style>" % CSS]
+    p = ["<style>%s</style>" % CSS, note]
 
     # 지금 상태와 다음에 할 일
     p.append("<div class=\"box\"><p><b>문서 %d개 · 덩어리 %d개 · 줄 %d개</b> · 정답: 줄 기준 예 %d개, 아니오 %d개 (덩어리로 따지면 예 %d개, 아니오 %d개)</p>" % (
@@ -951,21 +969,128 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
     for d in res.docs:
         lines = d.lines
         cells = "".join("<td class=\"n\">%d</td>" % sum(1 for b in d.blocks if (r.block_score(b) or 0) >= 0.5) for r in runs)
-        p.append("<tr><td><a href=\"%s\">%s</a>%s</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d</td>%s<td><a href=\"../%s\">열기</a></td></tr>" % (
+        p.append("<tr><td><a href=\"%s\">%s</a>%s</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d</td>%s<td><a href=\"%s\">열기</a></td></tr>" % (
             esc(doc_files[d.name]), esc(d.name), " <span class=\"tag2\" style=\"background:#7a3fb0\">시험용</span>" if d.name in res.test_names else "",
-            len(d.blocks), len(lines), sum(1 for l in lines if l.key in res.labels), cells, esc(d.report_file)))
+            len(d.blocks), len(lines), sum(1 for l in lines if l.key in res.labels), cells, up + esc(d.report_file)))
     p.append("</table></div>")
     p.append("<p class=\"legend\">항목마다의 점수는 <code>out/screen/scores.json</code>에, 학습시킨 분류기는 <code>%s</code> 폴더에 들어 있습니다. "
              "모델에는 글을 최대 %d토큰까지만 넣습니다(넘는 부분은 잘림).</p>" % (esc(str(res.labels_file.parent / "classifiers")), res.max_len))
-    sub = "추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델 비교 · <a href=\"../index.html\">추출 결과 첫 화면</a>"
+    sub = "추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델 비교 · <a href=\"%sindex.html\">추출 결과 첫 화면</a>" % up
     Path(path).write_text(_shell("1차 걸러내기 비교", sub, "", "".join(p)), encoding="utf-8")
 
 
-def write_all(res: Result, root: Path) -> Path:
-    out = res.out_dir / "screen"
+def write_all(res: Result, root: Path, dest: Optional[Path] = None, up: str = "../", note: str = "") -> Path:
+    """비교 화면을 만든다. dest: 놓을 폴더(없으면 out/screen).  up: 그 폴더에서 out까지 올라가는 길.  note: 첫 화면 맨 위의 안내"""
+    out = Path(dest) if dest else res.out_dir / "screen"
     out.mkdir(parents=True, exist_ok=True)
     doc_files = {d.name: d.units_file[:-len(".units.json")] + ".screen.html" for d in res.docs}
     for d in res.docs:
-        write_doc(res, d, out / doc_files[d.name])
-    write_index(res, out / "index.html", doc_files, root)
+        write_doc(res, d, out / doc_files[d.name], up)
+    write_index(res, out / "index.html", doc_files, root, up, note)
     return out / "index.html"
+
+
+# ---------------------------------------------------------------- 학습 기록
+
+def _basis(entry: dict) -> str:
+    """그 기록에서 볼 수치: 시험 문서로 잰 것이 있으면 그것(test), 없으면 교차 검증(cv)."""
+    for m in (entry.get("metrics") or {}).values():
+        for view, _ in VIEWS:
+            if (m.get(view) or {}).get("test"):
+                return "test"
+    return "cv"
+
+
+def _value(entry: dict, model: str, view: str, basis: str) -> Optional[dict]:
+    return (((entry.get("metrics") or {}).get(model) or {}).get(view) or {}).get(basis)
+
+
+def _trend_svg(entries: List[dict], model: str, basis: str) -> str:
+    """기록마다의 순위 정확도를 이은 꺾은선. 파랑은 덩어리로 넣음, 주황은 줄로 넣음. 세로 눈금은 0.5~1.0"""
+    w, h, left, right, top, bottom = 360, 150, 34, 96, 10, 22
+    xs = lambda i: left + (0 if len(entries) == 1 else (w - left - right) * i / float(len(entries) - 1))
+    ys = lambda v: top + (h - top - bottom) * (1.0 - max(0.0, min(1.0, (v - 0.5) / 0.5)))
+    parts = ["<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" role=\"img\">" % (w, h, w, h)]
+    for v in (0.5, 0.75, 1.0):
+        parts.append("<line class=\"grid\" x1=\"%d\" x2=\"%d\" y1=\"%.1f\" y2=\"%.1f\"/><text x=\"%d\" y=\"%.1f\" text-anchor=\"end\">%s</text>" % (
+            left, w - right, ys(v), ys(v), left - 5, ys(v) + 4, ("%.2f" % v).rstrip("0").rstrip(".") if v != 0.5 else "0.5"))
+    step = max(1, len(entries) // 8)
+    for i, e in enumerate(entries):
+        if i % step == 0 or i == len(entries) - 1:
+            parts.append("<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\">#%d</text>" % (xs(i), h - 6, e["n"]))
+    ends = []
+    for cls, view, name in (("1", "block", "덩어리"), ("2", "line", "줄")):
+        pts = [(xs(i), ys(v["auc"]), e["n"], v) for i, e in enumerate(entries) for v in [_value(e, model, view, basis)] if v]
+        if len(pts) > 1:
+            parts.append("<polyline class=\"l%s\" points=\"%s\"/>" % (cls, " ".join("%.1f,%.1f" % (x, y) for x, y, _, _ in pts)))
+        for x, y, n, v in pts:
+            parts.append("<circle class=\"p%s\" cx=\"%.1f\" cy=\"%.1f\" r=\"4\"><title>기록 #%d · %s로 넣음 · 순위 정확도 %.3f%s</title></circle>" % (
+                cls, x, y, n, name, v["auc"], " (학습 전 점수)" if v.get("stage") == "before" else ""))
+        if pts:
+            ends.append([pts[-1][1], "%s %.3f" % (name, pts[-1][3]["auc"]), pts[-1][0]])
+    ends.sort()
+    if len(ends) == 2 and ends[1][0] - ends[0][0] < 13:      # 끝 이름표가 겹치지 않게 벌린다
+        mid = (ends[0][0] + ends[1][0]) / 2.0
+        ends[0][0], ends[1][0] = mid - 6.5, mid + 6.5
+    for y, text, x in ends:
+        parts.append("<text class=\"lab\" x=\"%.1f\" y=\"%.1f\">%s</text>" % (x + 9, y + 4, esc(text)))
+    return "".join(parts) + "</svg>"
+
+
+def write_history(res: Result, entries: List[dict], path: Path, changed) -> None:
+    """학습 기록 화면. entries: 오래된 것부터.  changed(앞 기록, 이 기록) → 달라진 것의 말 목록"""
+    latest = entries[-1]
+    basis = _basis(latest)
+    models = [(k, m.get("label", k)) for k, m in (latest.get("metrics") or {}).items()]
+    p = ["<style>%s</style>" % CSS]
+    p.append("<div class=\"note\"><b>학습 기록 %d번</b> · 정답, 기준 문장, 쪽 제목 비율, 시험용 문서, 모델, 문서 가운데 하나라도 달라진 채로 계산하면 한 번씩 쌓입니다. "
+             "아무것도 바꾸지 않고 다시 계산하면 마지막 기록을 고쳐 씁니다. 지난 기록의 화면은 지워지지 않고 그대로 남습니다 "
+             "(<code>out/screen/history</code> 폴더. 자리를 많이 차지하면 오래된 번호의 폴더를 직접 지워도 됩니다).</div>" % len(entries))
+    # 추이 그림
+    shown = [e for e in entries if _basis(e) == basis][-30:]
+    p.append("<h2>순위 정확도의 추이</h2>")
+    p.append("<p class=\"legend viz\">%s <span class=\"key\"><i class=\"sw1\"></i>덩어리로 넣음</span><span class=\"key\"><i class=\"sw2\"></i>줄로 넣음</span> "
+             "가로는 기록 번호, 세로는 순위 정확도(1이면 완벽, 0.5면 무작위)입니다. <b>선이 위로 올라가면 나아진 것</b>입니다. 점에 마우스를 올리면 값이 나옵니다.%s</p>" % (
+                 "<b>시험 문서로 잰 값</b>입니다(학습에 쓰지 않은 문서라 기록끼리 그대로 견줄 수 있습니다)." if basis == "test" else
+                 "<b>교차 검증으로 잰 값</b>입니다. 정답이 늘면 채점하는 글도 함께 달라지므로 기록끼리의 비교는 대략적인 것입니다. "
+                 "정확히 견주려면 시험용 문서를 정해 두세요(<code>label.bat</code> 화면의 문서 목록).",
+                 " 최근 30번만 그렸습니다." if len([e for e in entries if _basis(e) == basis]) > 30 else ""))
+    p.append("<div class=\"viz\">%s</div>" % "".join(
+        "<div class=\"trend\"><h4>%s</h4>%s</div>" % (esc(label), _trend_svg(shown, key, basis)) for key, label in models))
+
+    # 목록 (새것부터)
+    p.append("<h2>기록 목록 (새것부터)</h2>")
+    p.append("<p class=\"legend\">숫자는 순위 정확도이고, 그 아래 작은 글씨는 바로 앞 기록과의 차이와 '예'의 %.0f%%를 찾는 문턱에서의 통과 비율입니다. "
+             "<b>그때의 화면</b>을 누르면 그 학습 때의 비교 화면 전체(문서별 점수 포함)가 그대로 열립니다. "
+             "'잰 방법'이 앞 기록과 다르면 차이를 적지 않았습니다.</p>" % (100 * res.target))
+    head = "".join("<th>%s<br>덩어리로 넣음</th><th>%s<br>줄로 넣음</th>" % (esc(label), esc(label)) for _, label in models)
+    p.append("<div class=\"wrap\"><table class=\"sum\"><tr><th>기록</th><th>학습한 때</th><th>앞 기록과 달라진 것</th><th>정답<br>(예 / 아니오)</th>"
+             "<th>학습에 쓴 정답<br>(서로 다른 줄)</th><th>잰 방법</th>%s<th>그때의 화면</th></tr>" % head)
+    for i in range(len(entries) - 1, -1, -1):
+        e, prev = entries[i], entries[i - 1] if i else None
+        b = _basis(e)
+        cells = ""
+        for key, _ in models:
+            for view in ("block", "line"):
+                v = _value(e, key, view, b)
+                if not v:
+                    cells += "<td class=\"n\">-</td>"
+                    continue
+                old = _value(prev, key, view, b) if prev is not None and _basis(prev) == b else None
+                delta = ""
+                if old:
+                    d = v["auc"] - old["auc"]
+                    delta = "<small class=\"%s\">%s%+.3f</small> · " % ("up" if d > 0.0005 else "down" if d < -0.0005 else "sub", "▲" if d > 0.0005 else "▼" if d < -0.0005 else "", d)
+                cells += "<td class=\"n\"><b>%s</b>%s<br>%s<small class=\"sub\">통과 %s</small></td>" % (
+                    _num(v["auc"], 3), " <small class=\"sub\">전</small>" if v.get("stage") == "before" else "", delta, _pct(v["pass"]))
+        tr = e.get("trained") or {}
+        p.append("<tr%s><td class=\"n\" style=\"white-space:nowrap\"><b>#%d</b>%s</td><td>%s</td><td>%s</td><td class=\"n\">%d / %d</td><td class=\"n\">%s / %s</td><td>%s</td>%s"
+                 "<td><a href=\"history/%s/index.html\"><b>열기</b></a></td></tr>" % (
+                     " class=\"now\"" if i == len(entries) - 1 else "", e["n"], " <small class=\"sub\">지금</small>" if i == len(entries) - 1 else "",
+                     esc(e.get("made", "")), "<br>".join(esc(x) for x in changed(prev, e)), e["labels"]["yes"], e["labels"]["no"],
+                     tr.get("line_yes", "-"), tr.get("line_no", "-"), "시험 문서" if b == "test" else "교차 검증", cells, esc(e["dir"])))
+    p.append("</table></div>")
+    p.append("<p class=\"legend\"><small class=\"sub\">전</small>은 그때 분류기가 없어 학습 전 점수로 잰 것입니다. "
+             "시험용 문서가 있을 때 같은 시험 글로 지난번과 이번을 정확히 견준 수치(범위 포함)와 판단이 바뀐 글 목록은 각 기록 화면의 '시험 문서로 잰 결과'에 있습니다.</p>")
+    sub = "학습할 때마다의 결과를 모아 둔 곳 · <a href=\"index.html\">지금의 비교 화면</a> · <a href=\"../index.html\">추출 결과 첫 화면</a>"
+    Path(path).write_text(_shell("학습 기록", sub, "", "".join(p)), encoding="utf-8")

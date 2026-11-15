@@ -100,6 +100,7 @@ table.docs td.st2{color:var(--yes);font-weight:700}
 <label id="mw">순서를 정하는 모델 <select id="model"></select></label>
 <span id="prog"></span>
 <button class="main" id="train">학습하고 결과 보기</button>
+<a href="/out/screen/history.html" target="_blank" title="학습할 때마다 저장해 둔 결과">학습 기록</a>
 </div>
 <main>
 <div class="box" id="dl"><b>문서 목록</b> · 정답은 <b>문서(파일)별로</b> 붙입니다. '이 문서 붙이기'를 누르면 그 문서의 글만 아래에 나옵니다. 붙이지 않을 문서는 그냥 두면 됩니다(학습에도 채점에도 쓰이지 않습니다).
@@ -222,7 +223,7 @@ $('os').addEventListener('click',function(){var m=$('om');m.className='msg';m.te
   .catch(function(e){m.className='msg bad';m.textContent=e.message})});
 $('train').addEventListener('click',function(){var b=$('train');b.disabled=true;$('tb').hidden=false;$('tt').textContent='계산 중입니다… (처음 계산하는 글이 있으면 시간이 걸립니다. label.bat 창에 진행 상황과 남은 시간이 나옵니다)';
   $('tl').innerHTML='';$('tlog').textContent='';window.scrollTo(0,0);
-  post('/train',{}).then(function(j){$('tt').textContent='끝났습니다.';$('tl').innerHTML='<a href="'+j.index+'" target="_blank"><b>비교 화면 열기</b></a>';$('tlog').textContent=j.log;
+  post('/train',{}).then(function(j){$('tt').textContent='끝났습니다.';$('tl').innerHTML='<a href="'+j.index+'" target="_blank"><b>비교 화면 열기</b></a> · <a href="'+j.history+'" target="_blank"><b>학습 기록 보기</b></a> · '+esc(j.saved);$('tlog').textContent=j.log;
     window.open(j.index,'_blank');return load(true)})
   .catch(function(e){$('tt').textContent='하지 못했습니다: '+e.message}).then(function(){b.disabled=false})});
 function load(keep){return fetch('/data').then(function(r){return r.json()}).then(function(j){D=j;L=j.labels;$('lf').textContent=j.labels_file;$('sf').textContent=j.sentences_file;
@@ -333,7 +334,9 @@ class App:
                 elif r.spec["kind"] == "embed":
                     for unit, name in (("block", "덩어리"), ("line", "줄")):
                         log("%s · %s: %s" % (r.spec["label"], name, "학습함" if r.after[unit] is not None else r.train_note[unit]))
-            return {"ok": True, "log": "\n".join(lines), "index": "/out/screen/index.html"}
+            saved = res.record["text"] if res.record else ""
+            log(saved)
+            return {"ok": True, "log": "\n".join(lines), "index": "/out/screen/index.html", "history": "/out/screen/history.html", "saved": saved}
         finally:
             self.busy.release()
 

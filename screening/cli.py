@@ -101,7 +101,18 @@ def execute(cfg: Config, log: Callable[[str], None]) -> Tuple[object, Path]:
         raise SystemExit("[오류] 돌릴 수 있는 모델이 없습니다. install_screen.bat 을 실행했는지 확인해 주세요.\n" +
                          "\n".join("       %s: %s" % (r.spec["label"], r.error) for r in res.runs))
     run.write_scores(res, Path(cfg.out_dir) / "screen" / "scores.json")
-    index = report.write_all(res, ROOT)
+    # 학습 기록: 이번 결과를 지금 화면(out/screen)과, 기록 폴더(out/screen/history/번호_때)에 함께 만든다
+    from . import history
+    entries, entry, is_new = history.prepare(res)
+    saved = "이 결과는 학습 기록 %d번에 %s" % (entry["n"], "새로 저장했습니다" if is_new else "다시 저장했습니다(학습 상태가 지난번과 같음)")
+    index = report.write_all(res, ROOT, note="<div class=\"note\"><b>%s.</b> <a href=\"history.html\"><b>학습 기록 보기 (%d번)</b></a> · "
+                             "학습할 때마다의 결과가 남아 있어 지난 결과와 견줘 볼 수 있습니다.</div>" % (saved, len(entries)))
+    report.write_all(res, ROOT, dest=history.folder(res) / entry["dir"], up="../../../",
+                     note="<div class=\"note old\"><b>저장된 학습 기록 #%d</b> · %s에 학습했을 때의 결과입니다. 지금의 결과가 아닐 수 있습니다. · "
+                          "<a href=\"../../history.html\"><b>기록 목록</b></a> · <a href=\"../../index.html\">지금의 비교 화면</a></div>" % (entry["n"], entry["made"]))
+    history.save(res, entries)
+    report.write_history(res, entries, Path(cfg.out_dir) / "screen" / "history.html", history.what_changed)
+    res.record = {"n": entry["n"], "new": is_new, "count": len(entries), "text": saved}
     return res, index
 
 

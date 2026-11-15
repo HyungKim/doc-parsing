@@ -49,6 +49,8 @@ def main() -> int:
     for r in res.runs:
         if not r.ok:
             log("  실행하지 못한 모델: %s (%s)" % (r.spec["label"], r.error))
+    if res.record:
+        log("%s · 기록 화면: %s" % (res.record["text"], index.parent / "history.html"))
     log("걸린 시간 %.0f초 · 비교 화면: %s" % (time.time() - t0, index))
     return 0 if ok else 1
 

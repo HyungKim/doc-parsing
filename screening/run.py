@@ -117,6 +117,7 @@ class Result:
     test_keys: Dict[str, set] = field(default_factory=lambda: {"block": set(), "line": set()})   # 시험 문서에 나오는 글의 지문
     history: List[dict] = field(default_factory=list)         # 시험 문서로 잰 결과의 기록(마지막이 지금)
     test_prev: Optional[dict] = None     # 지난번 기록(학습 상태가 지금과 달랐던 마지막 것)
+    record: Optional[dict] = None        # 이번 결과를 학습 기록의 몇 번에 저장했는가
 
     @property
     def blocks(self) -> List[BlockItem]:
