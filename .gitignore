@@ -12,4 +12,5 @@ labels/
 screen_sentences.txt
 screen_sentences.backup.txt
 screen_options.txt
+screen_test_docs.txt
 .tmp/

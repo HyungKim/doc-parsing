@@ -21,6 +21,7 @@ from .cli import Config, execute
 from .items import load_docs
 from .options import MAX_TITLE_WEIGHT, check_title_weight, write_option
 from .sentences import parse_sentences, read_text
+from .testdocs import read_test_docs, write_test_docs
 
 TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8",
          ".png": "image/png", ".jpg": "image/jpeg", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
@@ -77,11 +78,20 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 .ln.y button.by{background:var(--yes);border-color:var(--yes);color:#fff;font-weight:700}
 .ln.n button.bn{background:var(--no);border-color:var(--no);color:#fff;font-weight:700}
 #more{display:block;margin:14px auto;padding:6px 20px}
+table.docs{border-collapse:collapse;font-size:13px;margin:6px 0 2px}
+table.docs th,table.docs td{border-top:1px solid var(--line);padding:4px 10px;text-align:left;white-space:nowrap}
+table.docs th{border-top:0;color:var(--mute);font-weight:600;font-size:12px}
+table.docs td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.docs td.c{text-align:center}
+table.docs tr.on td{background:var(--cur);font-weight:700}
+table.docs td.st0{color:var(--mute)}
+table.docs td.st2{color:var(--yes);font-weight:700}
+#now{font-weight:700}
 </style></head><body>
 <header class="top"><h1>정답 붙이기</h1>
 <div class="sub">특허출원 검토가 필요한 줄이면 <b>예</b>, 아니면 <b>아니오</b>를 누릅니다. 누를 때마다 바로 저장됩니다 · 정답 파일: <span id="lf"></span></div></header>
 <div class="bar">
-<label>문서 <select id="doc"></select></label>
+<label>붙이는 문서 <select id="doc"></select></label>
 <label>보기 <select id="show"><option value="all">전체</option><option value="todo">정답이 덜 붙은 덩어리만</option><option value="yes">정답 '예'가 있는 덩어리만</option></select></label>
 <label>순서 <select id="sort"><option value="doc">문서 순서</option><option value="high">점수 높은 순</option><option value="mid">헷갈리는 순 (0.5에 가까운)</option></select></label>
 <label id="mw">점수 모델 <select id="model"></select></label>
@@ -89,6 +99,10 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 <button class="main" id="train">학습하고 결과 보기</button>
 </div>
 <main>
+<div class="box" id="dl"><b>문서 목록</b> · 정답은 <b>문서(파일)별로</b> 붙입니다. '이 문서 붙이기'를 누르면 그 문서의 글만 아래에 나옵니다. 붙이지 않을 문서는 그냥 두면 됩니다(학습에도 채점에도 쓰이지 않습니다).
+<div style="overflow-x:auto"><table class="docs" id="dt"></table></div>
+<p class="legend" style="margin:6px 0 0"><b>시험용</b>에 체크한 문서는 정답을 붙여 두되 <b>학습에는 쓰지 않고 채점에만</b> 씁니다. 학습용 정답을 늘려 갈 때마다 같은 시험 문서로 재서 얼마나 나아졌는지 비교하는 데 씁니다.
+시험용 문서에도 정답을 붙여야 채점할 수 있습니다. 같은 글이 다른 문서에도 있으면 그 글에는 같은 정답이 붙습니다.<span class="msg" id="tm"></span></p></div>
 <div class="box" id="tb" hidden><b id="tt">계산 중입니다…</b><span class="msg" id="tl"></span><pre class="log" id="tlog"></pre></div>
 <details class="box" id="sd"><summary>기준 문장 보기·고치기 (정답 없이 판단할 때 쓰는 문장)</summary>
 <p class="legend"><b>+</b> 로 시작하는 줄은 검토가 <b>필요한</b> 글을 나타내는 문장, <b>-</b> 로 시작하는 줄은 <b>필요 없는</b> 글을 나타내는 문장입니다. <b>#</b> 로 시작하는 줄은 메모입니다.
@@ -110,7 +124,14 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 </main><div id="err"></div>
 <script>
 (function(){
-var D=null,L={},rows={},blocks=[],shown=0,STEP=120,cur=null;
+var D=null,L={},T={},rows={},blocks=[],shown=0,STEP=120,cur=null;
+function docCounts(d){var y=0,n=0,t=0;d.blocks.forEach(function(b){b.lines.forEach(function(l){t++;var v=L[l.key];if(v===1)y++;else if(v===0)n++})});return{t:t,y:y,n:n}}
+function docTable(){var sel=$('doc').value;
+  $('dt').innerHTML='<tr><th>문서</th><th>줄</th><th>예</th><th>아니오</th><th>남음</th><th>상태</th><th>시험용</th><th></th></tr>'+D.docs.map(function(d,i){
+    var c=docCounts(d),left=c.t-c.y-c.n,st=(c.y+c.n===0)?0:(left===0?2:1);
+    return '<tr class="'+(String(i)===sel?'on':'')+'"><td>'+esc(d.name)+'</td><td class="n">'+c.t+'</td><td class="n">'+c.y+'</td><td class="n">'+c.n+'</td><td class="n">'+left+'</td>'+
+      '<td class="st'+st+'">'+['안 붙임','붙이는 중','다 붙임'][st]+'</td><td class="c"><input type="checkbox" class="tst" data-i="'+i+'"'+(T[d.name]?' checked':'')+'></td>'+
+      '<td><button class="go" data-i="'+i+'">'+(String(i)===sel?'지금 붙이는 문서':'이 문서 붙이기')+'</button></td></tr>'}).join('')}
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function post(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Label':'1'},body:JSON.stringify(body)}).then(function(r){
@@ -121,7 +142,7 @@ function blockState(b){var y=0,n=0;b.lines.forEach(function(l){var v=L[l.key];if
   if(y)return['y','정답 예'];if(n===b.lines.length)return['n','정답 아니오'];return['q',n?('덜 붙음 '+n+'/'+b.lines.length):'정답 없음']}
 function progress(){var y=0,n=0,t=0,by=0,bn=0;D.docs.forEach(function(d){d.blocks.forEach(function(b){var s=blockState(b)[0];if(s==='y')by++;else if(s==='n')bn++;
   b.lines.forEach(function(l){t++;var v=L[l.key];if(v===1)y++;else if(v===0)n++})})});
-  $('prog').innerHTML='줄 '+t+'개 · <b class="y">예 '+y+'</b> · 아니오 '+n+' · 남음 '+(t-y-n)+' <span class="sub">(덩어리: 예 '+by+' · 아니오 '+bn+')</span>'}
+  $('prog').innerHTML='전체 줄 '+t+'개 · <b class="y">예 '+y+'</b> · 아니오 '+n+' · 남음 '+(t-y-n)+' <span class="sub">(덩어리: 예 '+by+' · 아니오 '+bn+')</span>';docTable()}
 function pick(){var di=$('doc').value,show=$('show').value,sort=$('sort').value,out=[];
   D.docs.forEach(function(d,i){if(di!=='all'&&String(i)!==di)return;d.blocks.forEach(function(b){
     var s=blockState(b)[0],todo=b.lines.some(function(l){return L[l.key]==null});
@@ -134,12 +155,12 @@ function lineHtml(l){var v=L[l.key],s=score('line',l.key);
     '<span class="t">'+esc(l.text)+'</span>'+(s==null?'':'<span class="sc'+(s>=0.5?' hi':'')+'" title="고른 모델이 매긴 점수">'+s.toFixed(2)+'</span>')+'</div>'}
 function blockHtml(x,i){var b=x.b,st=blockState(b),s=score('block',b.key);
   return '<div class="blk" data-i="'+i+'"><div class="hd"><code>'+esc(b.id)+'</code><span class="wh" title="'+esc(b.title||'')+'">'+esc(x.d.name)+' · '+b.page+'쪽'+(b.title?' · '+esc(b.title):'')+'</span>'+
-    (b.kind==='table'?'<span class="tag2">표</span>':'')+(b.over?'<span class="tag2" style="background:#a15c00">표 위에 얹힌 글</span>':'')+
+    (T[x.d.name]?'<span class="tag2" style="background:#7a3fb0">시험용</span>':'')+(b.kind==='table'?'<span class="tag2">표</span>':'')+(b.over?'<span class="tag2" style="background:#a15c00">표 위에 얹힌 글</span>':'')+
     '<span class="st '+st[0]+'">'+st[1]+'</span>'+(s==null?'':'<span title="덩어리로 넣었을 때 고른 모델이 매긴 점수">점수 '+s.toFixed(2)+'</span>')+
     '<a href="/out/'+encodeURIComponent(x.d.report)+'#p'+b.page+'" target="_blank">추출 화면에서 보기</a><span class="sp"></span>'+
     '<button class="allno">남은 줄 모두 아니오</button><button class="clr">지우기</button></div>'+b.lines.map(lineHtml).join('')+'</div>'}
 function index(el){el.querySelectorAll('.ln').forEach(function(r){(rows[r.dataset.key]=rows[r.dataset.key]||[]).push(r)})}
-function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';more();
+function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';docTable();more();
   if(!blocks.length)$('list').innerHTML='<p class="legend">보여 줄 덩어리가 없습니다.</p>'}
 function more(){var part=blocks.slice(shown,shown+STEP),box=document.createElement('div');
   box.innerHTML=part.map(function(x,k){return blockHtml(x,shown+k)}).join('');index(box);
@@ -175,6 +196,12 @@ document.addEventListener('keydown',function(e){var tag=(e.target.tagName||'').t
   else if(cur&&(k==='a'||k==='ㅁ')){allNo(cur.parentNode)}});
 ['doc','show','sort','model'].forEach(function(id){$(id).addEventListener('change',render)});
 $('more').addEventListener('click',more);
+$('dt').addEventListener('click',function(e){var t=e.target;if(!t.classList.contains('go'))return;$('doc').value=t.dataset.i;render();
+  document.querySelector('.bar').scrollIntoView()});
+$('dt').addEventListener('change',function(e){var t=e.target;if(!t.classList.contains('tst'))return;var d=D.docs[+t.dataset.i];
+  if(t.checked)T[d.name]=1;else delete T[d.name];var m=$('tm');m.className='msg';m.textContent=' 저장 중…';
+  post('/testdocs',{names:Object.keys(T)}).then(function(j){m.className='msg ok';m.textContent=' 시험용 문서 '+j.count+'개로 저장했습니다. \'학습하고 결과 보기\'를 누르면 반영됩니다.';render()})
+  .catch(function(e){m.className='msg bad';m.textContent=' '+e.message;if(t.checked)delete T[d.name];else T[d.name]=1;docTable()})});
 $('ss').addEventListener('click',function(){var m=$('sm');m.className='msg';m.textContent='저장 중…';
   post('/sentences',{text:$('st').value}).then(function(j){m.className='msg ok';m.textContent='저장했습니다 (+ '+j.plus+'개, - '+j.minus+'개). \'학습하고 결과 보기\'를 누르면 반영됩니다.'})
   .catch(function(e){m.className='msg bad';m.textContent=e.message})});
@@ -188,8 +215,10 @@ $('train').addEventListener('click',function(){var b=$('train');b.disabled=true;
     window.open(j.index,'_blank');return load(true)})
   .catch(function(e){$('tt').textContent='하지 못했습니다: '+e.message}).then(function(){b.disabled=false})});
 function load(keep){return fetch('/data').then(function(r){return r.json()}).then(function(j){D=j;L=j.labels;$('lf').textContent=j.labels_file;$('sf').textContent=j.sentences_file;
-  if(!keep){$('st').value=j.sentences_text;$('oi').value=j.title_weight;$('of').textContent=j.options_file;showW(j.title_weight);$('doc').innerHTML='<option value="all">전체 ('+j.docs.length+'개)</option>'+j.docs.map(function(d,i){return '<option value="'+i+'">'+esc(d.name)+'</option>'}).join('');
-    if(j.docs.length===1)$('doc').value='0'}
+  T={};(j.test_docs||[]).forEach(function(n){T[n]=1});
+  if(!keep){$('st').value=j.sentences_text;$('oi').value=j.title_weight;$('of').textContent=j.options_file;showW(j.title_weight);
+    $('doc').innerHTML=j.docs.map(function(d,i){return '<option value="'+i+'">'+esc(d.name)+'</option>'}).join('')+'<option value="all">모든 문서 함께 보기 ('+j.docs.length+'개)</option>';
+    $('doc').value=j.docs.length?'0':'all'}
   var ms=j.scores?j.scores.models:[],sel=$('model').value;
   $('model').innerHTML=ms.map(function(m){return '<option value="'+esc(m.key)+'">'+esc(m.label)+'</option>'}).join('');
   if(sel&&ms.some(function(m){return m.key===sel}))$('model').value=sel;
@@ -217,7 +246,8 @@ class App:
                 for d in load_docs(cfg.out_dir)]
         return {"docs": docs, "labels": learn.load_labels(cfg.labels), "scores": self.scores(),
                 "labels_file": str(cfg.labels), "sentences_file": str(cfg.sentences), "sentences_text": read_text(cfg.sentences),
-                "title_weight": cfg.title_weight, "options_file": str(cfg.options)}
+                "title_weight": cfg.title_weight, "options_file": str(cfg.options),
+                "test_docs": read_test_docs(cfg.test_docs), "test_docs_file": str(cfg.test_docs)}
 
     def scores(self) -> Optional[dict]:
         """지난 계산이 있으면 항목마다의 최신 점수(학습 후가 있으면 그것, 없으면 학습 전)."""
@@ -258,6 +288,13 @@ class App:
             path.with_suffix(".backup.txt").write_bytes(path.read_bytes())
         path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
         return {"ok": True, "plus": sum(1 for s in got if s.positive), "minus": sum(1 for s in got if not s.positive)}
+
+    def save_test_docs(self, body: dict) -> dict:
+        names = body.get("names")
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise ValueError("잘못된 문서 목록")
+        write_test_docs(self.cfg.test_docs, names)
+        return {"ok": True, "count": len(read_test_docs(self.cfg.test_docs))}
 
     def save_options(self, body: dict) -> dict:
         w = check_title_weight(body.get("title_weight"))
@@ -348,6 +385,8 @@ def make_handler(app: App):
                     return self._json(200, app.save_labels(body))
                 if path == "/sentences":
                     return self._json(200, app.save_sentences(body))
+                if path == "/testdocs":
+                    return self._json(200, app.save_test_docs(body))
                 if path == "/options":
                     return self._json(200, app.save_options(body))
                 if path == "/train":

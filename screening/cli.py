@@ -23,6 +23,7 @@ class Config:
     download: bool
     models_dir: Path
     options: Path = ROOT / "screen_options.txt"    # 설정 파일
+    test_docs: Path = ROOT / "screen_test_docs.txt"   # 시험용 문서 목록
     title_weight: float = 0.0        # 쪽 제목 점수를 섞는 비율. 0이면 반영하지 않음
 
 
@@ -38,6 +39,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-download", action="store_true", help="모델 파일이 없어도 내려받지 않음")
     parser.add_argument("--title-weight", type=float, help="쪽 제목 점수를 글 점수에 섞는 비율 0~0.9 (기본: 설정 파일의 값, 처음에는 0 = 반영 안 함)")
     parser.add_argument("--options", help="설정 파일 (기본: 프로그램 폴더의 screen_options.txt)")
+    parser.add_argument("--test-docs", help="시험용 문서 목록 파일 (기본: 프로그램 폴더의 screen_test_docs.txt)")
 
 
 def config_from(args: argparse.Namespace) -> Config:
@@ -52,6 +54,7 @@ def config_from(args: argparse.Namespace) -> Config:
         raise SystemExit("[오류] %s" % exc)
     return Config(
         options=options_file,
+        test_docs=Path(args.test_docs) if args.test_docs else ROOT / "screen_test_docs.txt",
         title_weight=title_weight,
         out_dir=Path(args.out_dir),
         models=args.models,
@@ -91,8 +94,9 @@ def execute(cfg: Config, log: Callable[[str], None]) -> Tuple[object, Path]:
     """계산 → 학습 → 수치 → 리포트. 반환: (결과, 첫 화면 파일)"""
     setup_env(cfg.models_dir)
     from . import report, run
+    from .testdocs import read_test_docs
     res = run.run(cfg.out_dir, ROOT, cfg.models, cfg.sentences, cfg.labels, cfg.target, cfg.max_len, cfg.download, log, cfg.models_dir,
-                  cfg.title_weight)
+                  cfg.title_weight, read_test_docs(cfg.test_docs))
     if not any(r.ok for r in res.runs):            # 하나도 못 돌렸으면 지난 결과를 덮어쓰지 않는다
         raise SystemExit("[오류] 돌릴 수 있는 모델이 없습니다. install_screen.bat 을 실행했는지 확인해 주세요.\n" +
                          "\n".join("       %s: %s" % (r.spec["label"], r.error) for r in res.runs))

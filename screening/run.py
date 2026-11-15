@@ -9,7 +9,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from . import learn, models
+from . import learn, models, testdocs
 from .items import BlockItem, DocItems, LineItem, load_docs, text_key
 from .sentences import Sentence, load_sentences
 
@@ -35,6 +35,8 @@ class ModelRun:
     svm: Dict[str, Optional[Dict[str, float]]] = field(default_factory=lambda: {"block": None, "line": None})
     svm_note: Dict[str, str] = field(default_factory=lambda: {"block": "", "line": ""})
     train_info: Dict[str, Optional[dict]] = field(default_factory=lambda: {"block": None, "line": None})   # 실제로 적용된 분류기 설정
+    # 시험 문서를 지난번 기록과 견준 것: 보는 방식 → {"prev": 지난번의 (정답, 점수) 목록, "changed": 판단이 바뀐 글들}. 화면용
+    test_vs: Dict[str, dict] = field(default_factory=dict)
     # 쪽 제목 반영(옵션). title_w가 0이면 title_before는 비어 있고 점수는 글 점수 그대로다
     title_w: float = 0.0                 # 제목 점수를 섞는 비율
     title_before: Dict[str, float] = field(default_factory=dict)          # 제목의 지문 → 기준 문장으로 매긴 점수
@@ -111,10 +113,50 @@ class Result:
     previous: Optional[dict] = None      # 기준 문장을 고치기 전의 문장과 점수 (고친 효과를 재는 데 쓴다)
     title_weight: float = 0.0            # 쪽 제목 점수를 섞는 비율 (0이면 반영하지 않음)
     titles: Dict[str, str] = field(default_factory=dict)      # 제목의 지문 → 제목 (반영할 때만 채운다)
+    test_names: List[str] = field(default_factory=list)       # 시험용 문서(정답을 학습에 쓰지 않고 채점에만 쓰는 문서)의 이름
+    test_keys: Dict[str, set] = field(default_factory=lambda: {"block": set(), "line": set()})   # 시험 문서에 나오는 글의 지문
+    history: List[dict] = field(default_factory=list)         # 시험 문서로 잰 결과의 기록(마지막이 지금)
+    test_prev: Optional[dict] = None     # 지난번 기록(학습 상태가 지금과 달랐던 마지막 것)
 
     @property
     def blocks(self) -> List[BlockItem]:
         return [b for d in self.docs for b in d.blocks]
+
+    def part_docs(self, part: str) -> List[DocItems]:
+        """part: all | train(시험용이 아닌 문서) | test(시험용 문서)"""
+        if part == "all":
+            return self.docs
+        test = set(self.test_names)
+        return [d for d in self.docs if (d.name in test) == (part == "test")]
+
+    def part_blocks(self, part: str) -> List[BlockItem]:
+        return [b for d in self.part_docs(part) for b in d.blocks]
+
+    def label_of(self, unit: str, key: str, part: str = "all") -> Optional[int]:
+        """그 글의 정답. 시험용이 아닌 문서(train)를 볼 때는, 시험용 문서에도 똑같이 나오는 글은 정답이 없는 것으로 친다.
+
+        그런 글은 학습에 쓰지 않으므로, 학습용 문서의 수치에서도 빼야 시험용 문서와 겹치지 않는다.
+        """
+        if part == "train" and key in self.test_keys[unit]:
+            return None
+        return (self.labels if unit == "line" else self.block_labels).get(key)
+
+    def label_counts(self, part: str) -> dict:
+        """정답 수. 같은 글이 여러 번 나오면 나온 만큼 센다."""
+        blocks = self.part_blocks(part)
+        lines = [l for b in blocks for l in b.lines]
+        return {"line_yes": sum(1 for l in lines if self.label_of("line", l.key, part) == 1),
+                "line_no": sum(1 for l in lines if self.label_of("line", l.key, part) == 0),
+                "block_yes": sum(1 for b in blocks if self.label_of("block", b.key, part) == 1),
+                "block_no": sum(1 for b in blocks if self.label_of("block", b.key, part) == 0)}
+
+    def trained_on(self) -> dict:
+        """학습에 실제로 쓴 정답 수. 같은 글은 한 번만 센다(분류기가 보는 수와 같다)."""
+        blocks = self.part_blocks("train")
+        line = {l.key: self.label_of("line", l.key, "train") for b in blocks for l in b.lines}
+        block = {b.key: self.label_of("block", b.key, "train") for b in blocks}
+        return {"line_yes": sum(1 for v in line.values() if v == 1), "line_no": sum(1 for v in line.values() if v == 0),
+                "block_yes": sum(1 for v in block.values() if v == 1), "block_no": sum(1 for v in block.values() if v == 0)}
 
     def counts(self) -> dict:
         blocks = self.blocks
@@ -162,8 +204,17 @@ def keep_previous(out_dir: Path, sentences: List[Sentence]) -> Optional[dict]:
 
 def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: Path, labels_file: Path,
         target: float, max_len: int, download: bool, log: Callable[[str], None],
-        models_dir: Optional[Path] = None, title_weight: float = 0.0) -> Result:
+        models_dir: Optional[Path] = None, title_weight: float = 0.0, test_docs: Optional[List[str]] = None) -> Result:
     docs = load_docs(out_dir)
+    # 시험용 문서: 그 문서에 나오는 글은 정답이 있어도 학습에 쓰지 않는다(같은 글이 학습용 문서에도 있으면 그것도 뺀다)
+    wanted = set(test_docs or [])
+    test_names = [d.name for d in docs if d.name in wanted]
+    test_keys: Dict[str, set] = {"block": set(), "line": set()}
+    for d in docs:
+        if d.name in wanted:
+            for b in d.blocks:
+                test_keys["block"].add(b.key)
+                test_keys["line"].update(l.key for l in b.lines)
     sentences = load_sentences(sentences_file)
     previous = keep_previous(out_dir, sentences)
     labels = learn.load_labels(labels_file)
@@ -227,6 +278,7 @@ def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: P
                     r.best[unit] = {k: int(v) for k, v in zip(ks, best)}
                     # 학습 후: 정답으로 분류기를 학습시켜 다시 점수를 매긴다
                     unit_labels = block_labels if unit == "block" else {k: v for k, v in labels.items() if k in texts["line"]}
+                    unit_labels = {k: v for k, v in unit_labels.items() if k not in test_keys[unit]}
                     trained, why = learn.train({k: by_key[k] for k in ks}, unit_labels, groups[unit])
                     r.train_note[unit] = why
                     if trained is not None:
@@ -269,41 +321,60 @@ def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: P
             log("  실패: %s" % r.error)
 
     res = Result(Path(out_dir), docs, sentences, Path(sentences_file), Path(labels_file), labels, block_labels, runs, target, max_len,
-                 models_dir, previous, float(title_weight), titles)
+                 models_dir, previous, float(title_weight), titles, test_names, test_keys)
     for r in runs:
         if r.ok:
             r.metrics = measure_all(res, r)
+    if test_names:
+        update_test_history(res)
     return res
 
 
-def _items(res: Result, r: ModelRun, view: str, when: str, w: Optional[float] = None) -> List[tuple]:
-    """그 보는 방식의 항목마다 (정답, 점수). 항목 순서는 언제나 같아서 서로 짝지을 수 있다. w: 제목을 섞는 비율(없으면 설정값)"""
-    blocks = res.blocks
+def things(res: Result, view: str, part: str) -> List[tuple]:
+    """그 보는 방식에서 점수를 매기는 대상들: (덩어리, 줄 또는 None). part: all | train | test"""
+    blocks = res.part_blocks(part)
     if view == "line":
-        return [(res.labels.get(l.key), r.line_score(b, l, when, w)) for b in blocks for l in b.lines]
-    if view == "block":
-        return [(res.block_labels.get(b.key), r.block_score(b, when, w)) for b in blocks]
-    return [(res.block_labels.get(b.key), r.agg(b, when, w)) for b in blocks]
+        return [(b, l) for b in blocks for l in b.lines]
+    return [(b, None) for b in blocks]
 
 
-def view_items(res: Result, r: ModelRun, view: str, kind: str) -> Optional[List[tuple]]:
+def _items(res: Result, r: ModelRun, view: str, when: str, w: Optional[float] = None, part: str = "train") -> List[tuple]:
+    """그 보는 방식의 항목마다 (정답, 점수). 항목 순서는 things()와 같아서 서로 짝지을 수 있다.
+
+    w: 제목을 섞는 비율(없으면 설정값).  part: train(시험용이 아닌 문서. 시험용 문서가 없으면 전체) | test | all
+    """
+    out = []
+    for b, l in things(res, view, part):
+        if view == "line":
+            out.append((res.label_of("line", l.key, part), r.line_score(b, l, when, w)))
+        elif view == "block":
+            out.append((res.label_of("block", b.key, part), r.block_score(b, when, w)))
+        else:
+            out.append((res.label_of("block", b.key, part), r.agg(b, when, w)))
+    return out
+
+
+def view_items(res: Result, r: ModelRun, view: str, kind: str, part: str = "train") -> Optional[List[tuple]]:
     """분류기 종류를 견줄 때 쓰는 (정답, 점수) 목록. 쪽 제목 반영은 넣지 않은 글 점수다.
 
     kind: before(기준 문장) | logreg(로지스틱 회귀) | svm(선형 SVM).  그 분류기가 없으면 None
     """
     unit = "line" if view != "block" else "block"
     if kind == "before":
-        return _items(res, r, view, "before", 0.0)
+        return _items(res, r, view, "before", 0.0, part)
     if kind == "logreg":
-        return _items(res, r, view, "after", 0.0) if r.after[unit] is not None else None
+        return _items(res, r, view, "after", 0.0, part) if r.after[unit] is not None else None
     if r.svm[unit] is None:
         return None
-    blocks = res.blocks
-    if view == "line":
-        return [(res.labels.get(l.key), r.svm_score("line", l.key)) for b in blocks for l in b.lines]
-    if view == "block":
-        return [(res.block_labels.get(b.key), r.svm_score("block", b.key)) for b in blocks]
-    return [(res.block_labels.get(b.key), r.svm_agg(b)) for b in blocks]
+    out = []
+    for b, l in things(res, view, part):
+        if view == "line":
+            out.append((res.label_of("line", l.key, part), r.svm_score("line", l.key)))
+        elif view == "block":
+            out.append((res.label_of("block", b.key, part), r.svm_score("block", b.key)))
+        else:
+            out.append((res.label_of("block", b.key, part), r.svm_agg(b)))
+    return out
 
 
 def _measure(items: List[tuple], target: float, boundary: float = 0.5) -> Optional[dict]:
@@ -321,10 +392,11 @@ def _pair_gain(first: List[tuple], second: List[tuple], target: float) -> Option
 
 
 def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]]:
-    """보는 방식 세 가지 × 학습 전·후의 수치. 쪽 제목 반영을 켰으면 모든 수치는 제목을 반영한 점수로 잰다."""
+    """보는 방식 세 가지 × 학습 전·후의 수치. 쪽 제목 반영을 켰으면 모든 수치는 제목을 반영한 점수로 잰다.
+
+    시험용 문서가 있으면 여기의 수치는 시험용이 아닌 문서로만 재고(교차 검증), 시험용 문서로 잰 것은 "test"에 따로 둔다.
+    """
     out: Dict[str, Dict[str, Optional[dict]]] = {}
-    blocks = res.blocks
-    lines = [l for b in blocks for l in b.lines]
     for view, _ in VIEWS:
         out[view] = {}
         has_after = r.after["line" if view != "block" else "block"] is not None
@@ -347,9 +419,9 @@ def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]
                     return old["line"].get(item.key)
                 vals = [old["line"].get(l.key) for l in item.lines]
                 return max(vals) if vals and all(v is not None for v in vals) else None
-            things = lines if view == "line" else blocks
             raw = _items(res, r, view, "before", 0.0)
-            out[view]["edit"] = _pair_gain([(y, old_score(t)) for t, (y, _) in zip(things, raw)], raw, res.target)
+            out[view]["edit"] = _pair_gain([(y, old_score(l if view == "line" else b))
+                                            for (b, l), (y, _) in zip(things(res, view, "train"), raw)], raw, res.target)
 
         # 분류기 종류 비교: 같은 정답·같은 묶음으로 학습시킨 로지스틱 회귀와 선형 SVM을 짝지어 견준다(글 점수로, 제목 반영 없이)
         out[view]["svm"] = None
@@ -357,6 +429,17 @@ def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]
         if lr_items is not None and svm_items is not None:
             out[view]["svm"] = {"logreg": _measure(lr_items, res.target), "svm": _measure(svm_items, res.target, 0.0),
                                 "gain": _pair_gain(lr_items, svm_items, res.target)}
+
+        # 시험용 문서로 잰 것: 그 문서의 정답은 학습에 쓰이지 않았으므로, 학습 후 점수는 처음 보는 글에 매긴 점수다
+        out[view]["test"] = None
+        if res.test_names:
+            t_before = _items(res, r, view, "before", None, "test")
+            t_after = _items(res, r, view, "after", None, "test") if has_after else None
+            t_svm = view_items(res, r, view, "svm", "test")
+            out[view]["test"] = {"before": _measure(t_before, res.target),
+                                 "after": _measure(t_after, res.target) if t_after is not None else None,
+                                 "gain": _pair_gain(t_before, t_after, res.target) if t_after is not None else None,
+                                 "svm": _measure(t_svm, res.target, 0.0) if t_svm is not None else None}
 
         # 쪽 제목을 반영한 효과: 글 점수만(반영 전)과 제목을 섞은 점수(반영 후)를 짝지어 비교하고, 비율을 바꿔 가며 견준다
         out[view]["title"] = None
@@ -373,6 +456,77 @@ def measure_all(res: Result, r: ModelRun) -> Dict[str, Dict[str, Optional[dict]]
                     sweep.append({"w": w, "auc": m["auc"] if m else None, "pass": m["tuned"]["pass"] if m else None})
                 out[view]["title"][when] = {"gain": _pair_gain(raw, before if when == "before" else after, res.target), "sweep": sweep}
     return out
+
+
+# ---------------------------------------------------------------- 시험 문서의 기록과 지난번과의 비교
+
+def _uid(view: str, b: BlockItem, l: Optional[LineItem]) -> str:
+    return l.uid if view == "line" else b.uid
+
+
+def _snapshot_items(res: Result, snap: dict, model: str, view: str) -> List[tuple]:
+    """기록에 남은 점수를 지금의 시험 문서 항목 순서대로: (지금의 정답, 그때의 점수). 그때 없던 글은 점수가 None"""
+    got = (snap.get("scores") or {}).get(model) or {}
+    out = []
+    for b, l in things(res, view, "test"):
+        if view == "line":
+            out.append((res.labels.get(l.key), (got.get("line") or {}).get(l.uid)))
+        elif view == "block":
+            out.append((res.block_labels.get(b.key), (got.get("block") or {}).get(b.uid)))
+        else:
+            vals = [(got.get("line") or {}).get(x.uid) for x in b.lines]
+            out.append((res.block_labels.get(b.key), max(vals) if vals and all(v is not None for v in vals) else None))
+    return out
+
+
+def update_test_history(res: Result) -> None:
+    """시험 문서로 잰 지금의 결과를 기록에 남기고, 지난번 기록(학습 상태가 달랐던 마지막 것)과 견준다.
+
+    학습용 정답, 기준 문장, 쪽 제목 비율, 시험용 문서 가운데 하나라도 달라지면 새 기록이 쌓인다.
+    견줄 때는 같은 시험 글에 매긴 그때의 점수와 지금의 점수를 지금의 정답으로 짝짓는다.
+    """
+    ok = [r for r in res.runs if r.ok]
+    path = res.out_dir / "screen" / "test_history.json"
+    train_labels = sorted((k, v) for k, v in res.labels.items() if k not in res.test_keys["line"])
+    train = res.trained_on()
+    sig = testdocs.signature({"labels": train_labels, "sentences": [[s.positive, s.text] for s in res.sentences],
+                              "title": res.title_weight, "test": sorted(res.test_names), "models": [r.key for r in ok]})
+    snap = {"made": testdocs.now_text(), "sig": sig, "test_docs": sorted(res.test_names), "title_weight": res.title_weight,
+            "sentences": testdocs.signature([[s.positive, s.text] for s in res.sentences]),
+            "train": train, "test": res.label_counts("test"), "metrics": {}, "scores": {}}
+    for r in ok:
+        snap["metrics"][r.key] = {}
+        for view, _ in VIEWS:
+            t = (r.metrics.get(view) or {}).get("test") or {}
+            m = t.get("after") or t.get("before")
+            snap["metrics"][r.key][view] = None if m is None else {
+                "stage": "after" if t.get("after") else "before", "auc": m["auc"], "pass": m["tuned"]["pass"], "yes": m["yes"], "no": m["no"]}
+        snap["scores"][r.key] = {
+            "block": {b.uid: round(v, 5) for b, _ in things(res, "block", "test") for v in [r.block_score(b)] if v is not None},
+            "line": {l.uid: round(v, 5) for b, l in things(res, "line", "test") for v in [r.line_score(b, l)] if v is not None}}
+    history = testdocs.add_snapshot(testdocs.load_history(path), snap)
+    testdocs.save_history(path, history)
+    res.history, res.test_prev = history, testdocs.previous_of(history)
+    if res.test_prev is None:
+        return
+    for r in ok:
+        for view, _ in VIEWS:
+            t = (r.metrics.get(view) or {}).get("test")
+            if t is None:
+                continue
+            now = _items(res, r, view, "latest", None, "test")
+            prev = _snapshot_items(res, res.test_prev, r.key, view)
+            t["vs_prev"] = _pair_gain(prev, now, res.target)
+            changed = []                           # 문턱 0.5로 본 판단이 지난번과 달라진 글
+            for (b, l), (y, old), (_, new) in zip(things(res, view, "test"), prev, now):
+                if old is None or new is None or (old >= 0.5) == (new >= 0.5):
+                    continue
+                changed.append({"doc": b.uid.split("#")[0], "id": l.id if view == "line" else b.id, "page": b.page,
+                                "text": l.text if view == "line" else b.text, "label": y, "old": round(old, 4), "new": round(new, 4)})
+            t["changed"] = {"better": sum(1 for c in changed if c["label"] is not None and (c["new"] >= 0.5) == (c["label"] == 1)),
+                            "worse": sum(1 for c in changed if c["label"] is not None and (c["new"] >= 0.5) != (c["label"] == 1)),
+                            "unknown": sum(1 for c in changed if c["label"] is None)}
+            r.test_vs[view] = {"prev": prev, "changed": changed}
 
 
 def save_classifier(path: Path, spec: dict, unit: str, trained: dict, kind: str = "logistic_regression") -> None:
@@ -420,9 +574,10 @@ def write_scores(res: Result, path: Path) -> None:
                 block["final_from_lines"] = both(lambda r, when: r.agg(b, when) if when == "before" or r.after["line"] is not None else None)
             block["lines"] = lines
             blocks.append(block)
-        docs.append({"file": d.name, "kind": d.kind, "blocks": blocks})
+        docs.append({"file": d.name, "kind": d.kind, "test": d.name in res.test_names, "blocks": blocks})
     settings = next(({u: r.train_info[u] for u in ("block", "line")} for r in ok if r.train_info["block"] or r.train_info["line"]), None)
     data = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "title_weight": res.title_weight, "classifier_settings": settings,
+            "test_docs": list(res.test_names),
             "sentences": [{"name": s.name, "positive": s.positive, "text": s.text} for s in res.sentences],
             "models": [{"key": r.key, "label": r.spec["label"], "kind": r.spec["kind"], "ok": r.ok, "error": r.error,
                         "metrics": r.metrics} for r in res.runs],

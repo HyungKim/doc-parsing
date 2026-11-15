@@ -14,7 +14,7 @@ from docparse.report import _shell, esc
 
 from .items import BlockItem, DocItems
 from . import learn
-from .run import VIEWS, ModelRun, Result, view_items
+from .run import VIEWS, ModelRun, Result, _items, view_items
 
 CSS = """
 .box{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0;max-width:1100px}
@@ -157,7 +157,20 @@ def _block_html(res: Result, runs: List[ModelRun], b: BlockItem) -> str:
     # 쪽 제목을 반영해서 판단이 바뀌었는가 (반영을 켰을 때만)
     moved = bool(res.title_weight) and ([_decide(r.block_score(b, "latest", 0.0)) for r in runs] != d_whole or
                                         [_decide(r.agg(b, "latest", 0.0)) for r in runs] != d_merged)
+    # 시험용 문서라면: 지난번 기록과 견줘 판단(문턱 0.5)이 바뀌었는가
+    old = {}
+    if res.test_prev and b.uid.rsplit("#", 1)[0] in res.test_names:
+        old = res.test_prev.get("scores") or {}
+
+    def was(r: ModelRun, unit: str, uid: str) -> Optional[float]:
+        return ((old.get(r.key) or {}).get(unit) or {}).get(uid)
+
+    def flipped(r: ModelRun) -> bool:
+        pairs = [(was(r, "block", b.uid), r.block_score(b))] + [(was(r, "line", l.uid), r.line_score(b, l)) for l in b.lines]
+        return any(x is not None and y is not None and (x >= 0.5) != (y >= 0.5) for x, y in pairs)
+
     flags = {
+        "changed": "1" if old and any(flipped(r) for r in runs) else "0",
         "title": "1" if moved else "0",
         "split": "1" if known and len(set(known)) > 1 else "0",                              # 모델끼리 판단이 갈림
         "unit": "1" if any(x is not None and y is not None and x != y for x, y in zip(d_whole, d_merged)) else "0",   # 덩어리와 줄의 판단이 다름
@@ -169,8 +182,10 @@ def _block_html(res: Result, runs: List[ModelRun], b: BlockItem) -> str:
         "<span class=\"tag2\" style=\"background:#a15c00\">표 위에 얹힌 글</span>" if b.over_table else "",
         _label(label), len(b.lines))
     rows = ["<tr><th>글</th>%s</tr>" % "".join("<th>%s</th>" % esc(r.spec["label"]) for r in runs)]
-    def tip(r: ModelRun, unit: str, key: str) -> str:
+    def tip(r: ModelRun, unit: str, key: str, uid: str = "") -> str:
         out = ("가장 가까운 기준 문장: " + names[r.best[unit][key]]) if key in r.best[unit] else ""
+        if old and was(r, unit, uid) is not None:
+            out += " | 지난번 기록의 점수 %.2f" % was(r, unit, uid)
         if r.title_w:                              # 제목을 섞기 전의 글 점수와 제목 점수도 알려 준다
             s, t = r.score(unit, key), r.title_score(b.title)
             if s is not None and t is not None:
@@ -178,16 +193,16 @@ def _block_html(res: Result, runs: List[ModelRun], b: BlockItem) -> str:
         return out
 
     rows.append("<tr class=\"whole\"><td class=\"t\">덩어리로 넣음 (아래 줄을 모두 합친 글 하나)</td>%s</tr>" % "".join(
-        _cell(v, a, tip(r, "block", b.key)) for r, (v, a) in zip(runs, whole)))
+        _cell(v, a, tip(r, "block", b.key, b.uid)) for r, (v, a) in zip(runs, whole)))
     if len(b.lines) > 1:
         rows.append("<tr class=\"whole sumrow\"><td class=\"t\">줄로 넣어 합침 (아래 줄 점수 가운데 가장 높은 값)</td>%s</tr>" % "".join(
             _cell(v, a) for v, a in merged))
     for l in b.lines:
         rows.append("<tr><td class=\"t\">%s %s</td>%s</tr>" % (
             _label(res.labels.get(l.key)), esc(l.text), "".join(
-                _cell(r.line_score(b, l, "before"), r.line_score(b, l, "after"), tip(r, "line", l.key)) for r in runs)))
-    return "<div class=\"blk\" data-label=\"%s\" data-split=\"%s\" data-unit=\"%s\" data-miss=\"%s\" data-wrong=\"%s\" data-title=\"%s\">%s<table class=\"sc\">%s</table></div>" % (
-        "n" if label is None else str(label), flags["split"], flags["unit"], flags["miss"], flags["wrong"], flags["title"], head, "".join(rows))
+                _cell(r.line_score(b, l, "before"), r.line_score(b, l, "after"), tip(r, "line", l.key, l.uid)) for r in runs)))
+    return "<div class=\"blk\" data-label=\"%s\" data-split=\"%s\" data-unit=\"%s\" data-miss=\"%s\" data-wrong=\"%s\" data-title=\"%s\" data-changed=\"%s\">%s<table class=\"sc\">%s</table></div>" % (
+        "n" if label is None else str(label), flags["split"], flags["unit"], flags["miss"], flags["wrong"], flags["title"], flags["changed"], head, "".join(rows))
 
 
 def _title_line(runs: List[ModelRun], title: str) -> str:
@@ -202,6 +217,11 @@ def _title_line(runs: List[ModelRun], title: str) -> str:
 def write_doc(res: Result, doc: DocItems, path: Path) -> None:
     runs = [r for r in res.runs if r.ok]
     parts = ["<style>%s</style>" % CSS]
+    is_test = doc.name in res.test_names
+    if is_test:
+        parts.append("<p class=\"legend\"><span class=\"tag2\" style=\"background:#7a3fb0\">시험용 문서</span> 이 문서의 정답은 학습에 쓰지 않고 채점에만 씁니다. "
+                     "그래서 여기의 '학습 후' 점수는 분류기가 처음 보는 글에 매긴 점수입니다.%s</p>" % (
+                         " 칸에 마우스를 올리면 지난번 기록의 점수가 나오고, 위의 '지난번과 판단이 바뀐 것'을 체크하면 바뀐 덩어리만 볼 수 있습니다." if res.test_prev else ""))
     parts.append("<p class=\"legend\">덩어리마다 표 하나입니다. 맨 윗줄이 <b>덩어리로 넣었을 때</b>의 점수, 그 아래가 <b>줄로 넣었을 때</b> 줄마다의 점수입니다. "
                  "숫자는 '특허출원 검토가 필요한 쪽'으로 기운 정도(0~1)이고, 0.5 이상이면 굵게 적었습니다. 칸이 진한 초록일수록 점수가 높습니다. "
                  "<small>0.31 →</small> 0.82 처럼 적힌 칸은 학습 전 → 학습 후입니다. 칸에 마우스를 올리면 가장 가까웠던 기준 문장이 나옵니다.</p>")
@@ -215,8 +235,9 @@ def write_doc(res: Result, doc: DocItems, path: Path) -> None:
            "<label><input type=\"checkbox\" data-f=\"unit\"> 덩어리로 넣을 때와 줄로 넣을 때 판단이 다른 것</label>"
            "<label><input type=\"checkbox\" data-f=\"miss\"> 놓친 것(정답 예인데 0.5 미만)</label>"
            "<label><input type=\"checkbox\" data-f=\"wrong\"> 잘못 잡은 것(정답 아니오인데 0.5 이상)</label>"
-           "%s<span id=\"f-count\" class=\"sub\"></span></div>" % (
-               "<label><input type=\"checkbox\" data-f=\"title\"> 제목 반영으로 판단이 바뀐 것</label>" if res.title_weight else ""))
+           "%s%s<span id=\"f-count\" class=\"sub\"></span></div>" % (
+               "<label><input type=\"checkbox\" data-f=\"title\"> 제목 반영으로 판단이 바뀐 것</label>" if res.title_weight else "",
+               "<label><input type=\"checkbox\" data-f=\"changed\"> 지난번과 판단이 바뀐 것</label>" if is_test and res.test_prev else ""))
     page = None
     for b in doc.blocks:
         if b.page != page:
@@ -617,6 +638,155 @@ def _title_section(res: Result, runs: List[ModelRun], has_labels: bool, target: 
     return "".join(p)
 
 
+def _test_section(res: Result, runs: List[ModelRun], target: str) -> str:
+    """시험용 문서로 잰 결과: 학습 전·후, 지난번 기록과의 비교(그림·수치·판단이 바뀐 글), 기록."""
+    if not res.test_names:
+        return ""
+    tc, trc = res.label_counts("test"), res.trained_on()
+    p = ["<h2>시험 문서로 잰 결과</h2>"]
+    p.append("<p class=\"legend\"><b>시험용 문서 %d개</b>: %s. 이 문서들의 정답(줄 기준 예 %d개, 아니오 %d개)은 학습에 쓰지 않고 채점에만 씁니다. "
+             "분류기가 처음 보는 글로 재는 것이라, 실제로 새 문서에 썼을 때의 결과에 가장 가깝습니다. "
+             "학습에 쓴 정답은 서로 다른 줄 기준 예 %d개, 아니오 %d개입니다(시험용 문서에도 똑같이 나오는 글은 학습에서 뺐습니다).</p>" % (
+                 len(res.test_names), ", ".join(esc(n) for n in res.test_names), tc["line_yes"], tc["line_no"], trc["line_yes"], trc["line_no"]))
+    tests = {(r.key, v): (r.metrics.get(v) or {}).get("test") or {} for r in runs for v, _ in VIEWS}
+    if not any(t.get("before") for t in tests.values()):
+        p.append("<p class=\"legend\"><b>아직 수치를 낼 수 없습니다.</b> 시험용 문서에도 정답을 붙여야 채점할 수 있습니다. "
+                 "<code>label.bat</code> 화면에서 시험용 문서를 골라 '예'와 '아니오'가 모두 나오도록 붙여 주세요(덩어리는 '남은 줄 모두 아니오'로 끝까지).</p>")
+        return "".join(p)
+
+    # 그림: 학습 전 / (지난번) / 이번
+    prev = res.test_prev
+    p.append("<p class=\"legend viz\"><b>한눈에 보기</b>: 시험 문서의 정답 붙은 글을 점수가 낮은 것(왼쪽)부터 높은 것(오른쪽)까지 늘어놓았습니다. "
+             "<span class=\"key\"><i class=\"tick\"></i>윗줄: 정답이 '예'인 글</span><span class=\"key\"><i class=\"shade\"></i>아랫줄: 정답이 '아니오'인 글</span>"
+             "<span class=\"key\"><i class=\"passk\"></i>'예'의 %s를 찾는 문턱과 그것을 넘는 부분</span> "
+             "파란 금은 오른쪽에, 회색은 왼쪽에 몰릴수록, 파란 바탕은 좁을수록 좋습니다.%s</p>" % (
+                 target, " <b>지난번</b>은 학습 상태가 지금과 달랐던 마지막 기록(%s)입니다." % esc(prev.get("made", "")) if prev else ""))
+    p.append("<div class=\"wrap\"><table class=\"viz\"><tr><th>보는 방식</th><th>모델</th><th>언제</th>"
+             "<th><div class=\"axis\" style=\"width:%dpx\"><span>← 점수 낮음</span><span>점수 높음 →</span></div></th>"
+             "<th>순위 정확도</th><th>%s 찾는 문턱<br>통과 비율</th></tr>" % (STRIP_W, target))
+    for view, view_name in VIEWS:
+        first_view = True
+        per = 2 + (1 if prev else 0)
+        for r in runs:
+            t = tests[(r.key, view)]
+            unit = "line" if view != "block" else "block"
+            rows = [("기준 문장만 (학습 전)", _items(res, r, view, "before", None, "test"))]
+            if prev:
+                rows.append(("지난번", r.test_vs.get(view, {}).get("prev")))
+            rows.append(("이번" + (" (학습 후)" if r.after[unit] is not None else " (학습 전과 같음)"), _items(res, r, view, "latest", None, "test")))
+            for k, (name, items) in enumerate(rows):
+                scored = [(y, s) for y, s in (items or []) if s is not None]
+                m = learn.measure([y for y, _ in scored if y is not None], [s for y, s in scored if y is not None],
+                                  [s for _, s in scored], res.target) if scored else None
+                lead = ""
+                if k == 0:
+                    if first_view:
+                        lead += "<td rowspan=\"%d\"><b>%s</b></td>" % (per * len(runs), esc(view_name))
+                        first_view = False
+                    lead += "<td rowspan=\"%d\">%s</td>" % (per, esc(r.spec["label"]))
+                last = k == len(rows) - 1
+                p.append("<tr class=\"%s%s\">%s<td class=\"kind\">%s</td><td>%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td></tr>" % (
+                    "first " if k == 0 else "", "pick" if last else "", lead, esc(name), _strip(items, res.target, name) or "<span class=\"sub\">-</span>",
+                    ("<b>%s</b>" if last else "%s") % _num(m["auc"], 3) if m else "-", _pct(m["tuned"]["pass"]) if m else "-"))
+    p.append("</table></div>")
+
+    # 수치: 학습 전 → 후 (시험 문서)
+    p.append("<p class=\"legend\"><b>학습 전 → 학습 후 (시험 문서)</b>: 읽는 법은 아래 '학습 전과 학습 후 비교'와 같습니다. 선형 SVM은 견주기용입니다.</p>")
+    p.append("<div class=\"wrap\"><table class=\"sum num\"><tr><th rowspan=\"2\">보는 방식</th><th rowspan=\"2\">모델</th><th rowspan=\"2\">시험 정답 수<br>(예/아니오)</th>"
+             "<th colspan=\"4\" class=\"grp\">학습 전 (기준 문장만)</th><th colspan=\"4\" class=\"grp\">학습 후 (학습용 정답으로 학습)</th>"
+             "<th colspan=\"2\" class=\"grp\">개선 정도 (학습 후 − 학습 전)</th><th rowspan=\"2\">선형 SVM<br>순위 정확도</th></tr><tr>%s<th>순위 정확도 변화</th><th>%s 찾는 문턱<br>통과 비율 변화</th></tr>" % (
+                 "<th>순위 정확도</th><th>0.5 문턱<br>찾아낸 비율</th><th>0.5 문턱<br>통과 비율</th><th>%s 찾는 문턱<br>통과 비율</th>" % target * 2, target))
+    for view, view_name in VIEWS:
+        aucs = [m["auc"] for r in runs for m in (tests[(r.key, view)].get("before"), tests[(r.key, view)].get("after")) if m and m["auc"] is not None]
+        best = max(aucs) if aucs else None
+        for k, r in enumerate(runs):
+            t = tests[(r.key, view)]
+            mb, ma, sv = t.get("before"), t.get("after"), t.get("svm")
+            first = "<td rowspan=\"%d\"><b>%s</b></td>" % (len(runs), esc(view_name)) if k == 0 else ""
+            p.append("<tr>%s<td>%s</td><td class=\"n\">%s</td>%s%s%s<td class=\"n\">%s</td></tr>" % (
+                first, esc(r.spec["label"]), "%d / %d" % (mb["yes"], mb["no"]) if mb else "-", _metric_cells(mb, best, res.target),
+                _metric_cells(ma, best, res.target).replace("<td class=\"n", "<td class=\"g n"), _gain_cells(t.get("gain")),
+                _num(sv["auc"], 3) if sv else "-"))
+    p.append("</table></div>")
+
+    # 지난번 → 이번
+    if prev:
+        ptr, ntr = prev.get("train") or {}, trc
+        notes = ["학습에 쓴 정답(서로 다른 줄): 예 %s → %d개, 아니오 %s → %d개" % (ptr.get("line_yes", "?"), ntr["line_yes"], ptr.get("line_no", "?"), ntr["line_no"])]
+        now_snap = res.history[-1] if res.history else {}
+        notes.append("기준 문장: " + ("바뀜" if prev.get("sentences") != now_snap.get("sentences") else "같음"))
+        notes.append("쪽 제목 비율: %g → %g" % (prev.get("title_weight", 0), res.title_weight))
+        if prev.get("test_docs") != now_snap.get("test_docs"):
+            notes.append("시험용 문서 목록이 바뀜(두 번 모두에 있는 글만 견줌)")
+        p.append("<h2 style=\"font-size:14px\">지난번 → 이번 (같은 시험 글, 같은 정답으로 견줌)</h2>")
+        p.append("<p class=\"legend\">지난번 기록: %s · 달라진 것: %s.<br>같은 시험 글에 지난번 매긴 점수와 이번에 매긴 점수를 지금의 정답으로 짝지어 견줬습니다. "
+                 "괄호의 범위 전체가 0보다 크면 <b>나아짐</b>, 0을 걸치면 <b>우연일 수 있음</b>입니다. "
+                 "<b>판단이 바뀐 글</b>은 문턱 0.5로 본 통과 여부가 달라진 글 수이고, 맞게 바뀐 것과 틀리게 바뀐 것으로 나눴습니다.</p>" % (
+                     esc(prev.get("made", "")), " · ".join(esc(n) for n in notes)))
+        p.append("<div class=\"wrap\"><table class=\"sum num\"><tr><th>보는 방식</th><th>모델</th><th>순위 정확도<br>지난번</th><th>순위 정확도<br>이번</th>"
+                 "<th>순위 정확도 변화</th><th>%s 찾는 문턱<br>통과 비율 변화</th><th>판단이 바뀐 글<br>(맞게 / 틀리게 / 정답 없음)</th></tr>" % target)
+        for view, view_name in VIEWS:
+            for k, r in enumerate(runs):
+                t = tests[(r.key, view)]
+                g, ch = t.get("vs_prev"), t.get("changed") or {}
+                first = "<td rowspan=\"%d\"><b>%s</b></td>" % (len(runs), esc(view_name)) if k == 0 else ""
+                p.append("<tr>%s<td>%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td>%s<td class=\"n\">%s</td></tr>" % (
+                    first, esc(r.spec["label"]), _num(g["auc_before"], 3) if g else "-", _num(g["auc_after"], 3) if g else "-", _gain_cells(g),
+                    "<span class=\"plus\">%d</span> / <span class=\"minus\">%d</span> / %d" % (ch.get("better", 0), ch.get("worse", 0), ch.get("unknown", 0)) if ch else "-"))
+        p.append("</table></div>")
+        # 판단이 바뀐 글 목록
+        for r in runs:
+            body, count = [], 0
+            for view, view_name in (("block", "덩어리"), ("line", "줄")):
+                for c in (r.test_vs.get(view, {}).get("changed") or []):
+                    count += 1
+                    if len(body) >= 300:
+                        continue
+                    up = c["new"] >= 0.5
+                    if c["label"] is None:
+                        way = "<span class=\"sub\">정답 없음</span>"
+                    elif up == (c["label"] == 1):
+                        way = "<span class=\"plus\">맞게 바뀜</span>"
+                    else:
+                        way = "<span class=\"minus\">틀리게 바뀜</span>"
+                    text = c["text"] if len(c["text"]) <= 160 else c["text"][:160] + "…"
+                    body.append("<tr><td>%s</td><td>%s · %s</td><td>%s</td><td class=\"v\">%s → <b>%s</b> %s</td><td>%s</td><td class=\"t\">%s</td></tr>" % (
+                        view_name, esc(c["doc"]), esc(c["id"]), _label(c["label"]), _num(c["old"]), _num(c["new"]),
+                        "통과로" if up else "탈락으로", way, esc(text)))
+            if count:
+                p.append("<details class=\"box\" style=\"max-width:none\"><summary>%s: 지난번과 판단이 바뀐 글 %d개 보기%s</summary>"
+                         "<div class=\"wrap\"><table class=\"sc\"><tr><th>단위</th><th>문서 · 번호</th><th>정답</th><th>지난번 → 이번</th><th>바뀐 방향</th><th>글</th></tr>%s</table></div></details>" % (
+                             esc(r.spec["label"]), count, " (앞의 300개만 표시)" if count > 300 else "", "".join(body)))
+        p.append("<p class=\"legend\">문서별 화면에서도 시험용 문서는 '지난번과 판단이 바뀐 것'을 체크해 그 덩어리만 볼 수 있습니다.</p>")
+    else:
+        p.append("<p class=\"legend\"><b>지난번 → 이번</b>: 아직 견줄 기록이 없습니다. 학습용 정답을 더 붙이거나 기준 문장·설정을 바꾼 뒤 다시 계산하면, "
+                 "같은 시험 글로 잰 지난번과 이번의 차이(수치와 판단이 바뀐 글)가 여기에 나옵니다.</p>")
+
+    # 기록
+    if res.history:
+        head = "".join("<th>%s<br>덩어리로 넣음</th><th>%s<br>줄로 넣음</th>" % (esc(r.spec["label"]), esc(r.spec["label"])) for r in runs)
+        body = []
+        for i, snap in enumerate(res.history):
+            cells = ""
+            for r in runs:
+                for view in ("block", "line"):
+                    m = ((snap.get("metrics") or {}).get(r.key) or {}).get(view)
+                    cells += "<td class=\"n\">%s%s</td>" % (_num(m["auc"], 3) if m and m.get("auc") is not None else "-",
+                                                             " <small class=\"sub\">전</small>" if m and m.get("stage") == "before" else "")
+            tr, te = snap.get("train") or {}, snap.get("test") or {}
+            same = i > 0 and snap.get("sentences") == res.history[i - 1].get("sentences")
+            body.append("<tr><td>%s%s</td><td class=\"n\">%s / %s</td><td class=\"n\">%s / %s</td><td>%s</td><td class=\"n\">%g</td>%s</tr>" % (
+                esc(snap.get("made", "")), " <b>(지금)</b>" if i == len(res.history) - 1 else "", tr.get("line_yes", "-"), tr.get("line_no", "-"),
+                te.get("line_yes", "-"), te.get("line_no", "-"), "처음" if i == 0 else ("같음" if same else "바뀜"), snap.get("title_weight", 0), cells))
+        p.append("<details class=\"box\" style=\"max-width:none\"%s><summary>기록: 학습 상태가 바뀔 때마다 시험 문서로 잰 순위 정확도 (%d번)</summary>"
+                 "<p class=\"legend\">학습용 정답, 기준 문장, 쪽 제목 비율, 시험용 문서 가운데 하나라도 달라진 채로 계산하면 한 줄이 쌓입니다. "
+                 "학습용 정답이 늘수록 숫자가 올라가는지 보세요. <small class=\"sub\">전</small>은 그때 분류기가 없어 학습 전 점수로 잰 것입니다. "
+                 "시험 정답 수가 줄마다 다르면 그때그때의 정답으로 잰 것이라 서로 정확히 맞지는 않습니다(정확한 비교는 위의 '지난번 → 이번').</p>"
+                 "<div class=\"wrap\"><table class=\"sum num\"><tr><th>계산한 때</th><th>학습에 쓴 정답<br>(서로 다른 줄: 예 / 아니오)</th><th>시험 정답<br>(줄: 예 / 아니오)</th>"
+                 "<th>기준 문장</th><th>제목 비율</th>%s</tr>%s</table></div></details>" % (" open" if len(res.history) > 1 else "", len(res.history), head, "".join(body)))
+    return "".join(p)
+
+
 def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
     c = res.counts()
     runs = [r for r in res.runs if r.ok]
@@ -636,6 +806,10 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
         p.append("<p>정답으로 분류기를 학습시켰습니다. 아래 표에서 <b>학습 전과 학습 후</b>를 비교할 수 있습니다.</p>")
     if has_labels:
         p.append(_headline(res, runs))
+    if res.test_names:
+        tc = res.label_counts("test")
+        p.append("<p><b>시험용 문서 %d개</b> (정답: 줄 기준 예 %d개, 아니오 %d개)는 학습에 쓰지 않고 채점에만 씁니다. 아래 '시험 문서로 잰 결과'를 먼저 보세요.</p>" % (
+            len(res.test_names), tc["line_yes"], tc["line_no"]))
     if res.title_weight:
         p.append("<p><b>쪽 제목 반영: 켜짐</b> (비율 %g = 글 %.0f%%, 제목 %.0f%%). 이 화면의 점수와 수치는 제목을 반영한 값입니다. "
                  "반영 전과의 차이는 아래 '쪽 제목을 반영한 효과'에 있습니다.</p>" % (
@@ -682,7 +856,11 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
     p.append("</table></div>")
 
     # 학습 전·후 수치
+    p.append(_test_section(res, runs, target))
     p.append("<h2>학습 전과 학습 후 비교</h2>")
+    if res.test_names:
+        p.append("<p class=\"legend\">시험용 문서가 지정돼 있어, 여기부터 아래의 수치는 <b>시험용이 아닌 문서</b>로만 잰 것입니다(그 글을 빼고 학습시킨 분류기로 채점). "
+                 "시험용 문서로 잰 결과는 바로 위에 있습니다.</p>")
     if not has_labels:
         p.append("<p class=\"legend\">정답을 붙이면 나옵니다.</p>")
     else:
@@ -773,8 +951,9 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path) -> None:
     for d in res.docs:
         lines = d.lines
         cells = "".join("<td class=\"n\">%d</td>" % sum(1 for b in d.blocks if (r.block_score(b) or 0) >= 0.5) for r in runs)
-        p.append("<tr><td><a href=\"%s\">%s</a></td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d</td>%s<td><a href=\"../%s\">열기</a></td></tr>" % (
-            esc(doc_files[d.name]), esc(d.name), len(d.blocks), len(lines), sum(1 for l in lines if l.key in res.labels), cells, esc(d.report_file)))
+        p.append("<tr><td><a href=\"%s\">%s</a>%s</td><td class=\"n\">%d</td><td class=\"n\">%d</td><td class=\"n\">%d</td>%s<td><a href=\"../%s\">열기</a></td></tr>" % (
+            esc(doc_files[d.name]), esc(d.name), " <span class=\"tag2\" style=\"background:#7a3fb0\">시험용</span>" if d.name in res.test_names else "",
+            len(d.blocks), len(lines), sum(1 for l in lines if l.key in res.labels), cells, esc(d.report_file)))
     p.append("</table></div>")
     p.append("<p class=\"legend\">항목마다의 점수는 <code>out/screen/scores.json</code>에, 학습시킨 분류기는 <code>%s</code> 폴더에 들어 있습니다. "
              "모델에는 글을 최대 %d토큰까지만 넣습니다(넘는 부분은 잘림).</p>" % (esc(str(res.labels_file.parent / "classifiers")), res.max_len))
