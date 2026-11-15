@@ -72,8 +72,11 @@ h3.pg{font-size:14px;margin:20px 0 6px;color:var(--mute)}
 .ln.n{border-left-color:var(--no)}
 .ln.n .t{color:var(--mute)}
 .ln .t{flex:1;white-space:pre-wrap;word-break:break-word;min-width:0}
-.ln .sc{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap;width:38px;text-align:right}
-.ln .sc.hi{color:var(--yes);font-weight:700}
+.scs{display:inline-flex;gap:2px;white-space:nowrap}
+.sc{display:inline-block;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap;width:38px;text-align:right}
+.sc.hi{color:var(--yes);font-weight:700}
+.sc.sel{text-decoration:underline;text-underline-offset:3px}
+#sk b{font-weight:700}
 .ln button{white-space:nowrap;min-width:52px}
 .ln.y button.by{background:var(--yes);border-color:var(--yes);color:#fff;font-weight:700}
 .ln.n button.bn{background:var(--no);border-color:var(--no);color:#fff;font-weight:700}
@@ -94,7 +97,7 @@ table.docs td.st2{color:var(--yes);font-weight:700}
 <label>붙이는 문서 <select id="doc"></select></label>
 <label>보기 <select id="show"><option value="all">전체</option><option value="todo">정답이 덜 붙은 덩어리만</option><option value="yes">정답 '예'가 있는 덩어리만</option></select></label>
 <label>순서 <select id="sort"><option value="doc">문서 순서</option><option value="high">점수 높은 순</option><option value="mid">헷갈리는 순 (0.5에 가까운)</option></select></label>
-<label id="mw">점수 모델 <select id="model"></select></label>
+<label id="mw">순서를 정하는 모델 <select id="model"></select></label>
 <span id="prog"></span>
 <button class="main" id="train">학습하고 결과 보기</button>
 </div>
@@ -117,6 +120,7 @@ table.docs td.st2{color:var(--yes);font-weight:700}
 같은 쪽의 글이 함께 오르내리므로, 일정 같은 제목의 쪽에 섞인 기술 내용은 점수가 내려갑니다. 파일: <span id="of"></span></p>
 <label>비율 <input id="oi" type="number" min="0" max="0.9" step="0.05" style="width:80px"></label>
 <button id="os">저장</button><span class="msg" id="om"></span></details>
+<p class="legend" id="sk"></p>
 <p class="legend">키보드: <kbd>↑</kbd><kbd>↓</kbd> 줄 이동 · <kbd>Y</kbd> 예 · <kbd>N</kbd> 아니오 (누르면 다음 줄로 넘어갑니다) · <kbd>X</kbd> 지우기 · <kbd>A</kbd> 이 덩어리의 남은 줄 모두 아니오.
 덩어리의 정답은 줄에서 따옵니다: 줄 하나라도 '예'면 덩어리도 '예', 모든 줄이 '아니오'면 덩어리도 '아니오'. 같은 글은 어느 문서에 있든 한 번만 붙이면 됩니다.
 수치를 공정하게 재려면 점수가 높은 것만 골라 붙이지 말고 <b>한 쪽이나 한 문서를 통째로</b> 붙이는 것이 좋습니다.</p>
@@ -138,6 +142,13 @@ function post(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':
   return r.json().then(function(j){if(!r.ok||j.ok===false)throw new Error(j.error||('오류 '+r.status));return j})})}
 function fail(e){var el=$('err');el.textContent='저장하지 못했습니다: '+e.message+' (label.bat 창이 켜져 있는지 확인하세요)';el.style.display='block';setTimeout(function(){el.style.display='none'},8000)}
 function score(unit,key){var m=$('model').value;if(!D.scores||!m)return null;var v=(D.scores[unit][key]||{})[m];return v==null?null:v}
+function scoreCells(unit,key){if(!D.scores)return '';var sel=$('model').value,got=D.scores[unit][key]||{};
+  return '<span class="scs">'+D.scores.models.map(function(m){var v=got[m.key];
+    return '<span class="sc'+(v!=null&&v>=0.5?' hi':'')+(m.key===sel?' sel':'')+'" title="'+esc(m.label)+'이 매긴 점수">'+(v==null?'-':v.toFixed(2))+'</span>'}).join('')+'</span>'}
+function scoreKey(){var ms=D.scores?D.scores.models:[],sel=$('model').value;
+  $('sk').innerHTML=ms.length?('<b>오른쪽의 숫자</b>는 마지막으로 계산했을 때 모델마다 매긴 점수이고, 왼쪽부터 '+ms.map(function(m){return (m.key===sel?'<u>':'')+esc(m.label)+(m.key===sel?'</u>':'')}).join(' · ')+
+    ' 순서입니다. 0.5 이상이면 초록 굵은 글씨, 밑줄은 \'순서를 정하는 모델\'입니다. 덩어리 머리의 숫자는 덩어리를 통째로 넣었을 때의 점수입니다. 정답을 붙여도 바로 바뀌지 않고, \'학습하고 결과 보기\'를 누르면 새 점수로 바뀝니다.'):
+    '아직 계산한 적이 없어 점수가 없습니다. \'학습하고 결과 보기\'를 누르거나 screen.bat을 실행하면 모델마다의 점수가 줄 옆에 나옵니다.'}
 function blockState(b){var y=0,n=0;b.lines.forEach(function(l){var v=L[l.key];if(v===1)y++;else if(v===0)n++});
   if(y)return['y','정답 예'];if(n===b.lines.length)return['n','정답 아니오'];return['q',n?('덜 붙음 '+n+'/'+b.lines.length):'정답 없음']}
 function progress(){var y=0,n=0,t=0,by=0,bn=0;D.docs.forEach(function(d){d.blocks.forEach(function(b){var s=blockState(b)[0];if(s==='y')by++;else if(s==='n')bn++;
@@ -150,17 +161,17 @@ function pick(){var di=$('doc').value,show=$('show').value,sort=$('sort').value,
   if(sort!=='doc'){out.forEach(function(x){var v=score('block',x.b.key);x.v=v==null?-1:(sort==='high'?v:1-Math.abs(v-0.5)*2)});
     out.sort(function(a,b){return b.v-a.v})}
   return out}
-function lineHtml(l){var v=L[l.key],s=score('line',l.key);
+function lineHtml(l){var v=L[l.key];
   return '<div class="ln'+(v===1?' y':v===0?' n':'')+'" data-key="'+l.key+'"><button class="by">예</button><button class="bn">아니오</button>'+
-    '<span class="t">'+esc(l.text)+'</span>'+(s==null?'':'<span class="sc'+(s>=0.5?' hi':'')+'" title="고른 모델이 매긴 점수">'+s.toFixed(2)+'</span>')+'</div>'}
-function blockHtml(x,i){var b=x.b,st=blockState(b),s=score('block',b.key);
+    '<span class="t">'+esc(l.text)+'</span>'+scoreCells('line',l.key)+'</div>'}
+function blockHtml(x,i){var b=x.b,st=blockState(b);
   return '<div class="blk" data-i="'+i+'"><div class="hd"><code>'+esc(b.id)+'</code><span class="wh" title="'+esc(b.title||'')+'">'+esc(x.d.name)+' · '+b.page+'쪽'+(b.title?' · '+esc(b.title):'')+'</span>'+
     (T[x.d.name]?'<span class="tag2" style="background:#7a3fb0">시험용</span>':'')+(b.kind==='table'?'<span class="tag2">표</span>':'')+(b.over?'<span class="tag2" style="background:#a15c00">표 위에 얹힌 글</span>':'')+
-    '<span class="st '+st[0]+'">'+st[1]+'</span>'+(s==null?'':'<span title="덩어리로 넣었을 때 고른 모델이 매긴 점수">점수 '+s.toFixed(2)+'</span>')+
+    '<span class="st '+st[0]+'">'+st[1]+'</span>'+(D.scores?'<span title="덩어리를 통째로 넣었을 때 모델마다 매긴 점수">덩어리 점수 '+scoreCells('block',b.key)+'</span>':'')+
     '<a href="/out/'+encodeURIComponent(x.d.report)+'#p'+b.page+'" target="_blank">추출 화면에서 보기</a><span class="sp"></span>'+
     '<button class="allno">남은 줄 모두 아니오</button><button class="clr">지우기</button></div>'+b.lines.map(lineHtml).join('')+'</div>'}
 function index(el){el.querySelectorAll('.ln').forEach(function(r){(rows[r.dataset.key]=rows[r.dataset.key]||[]).push(r)})}
-function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';docTable();more();
+function render(){blocks=pick();shown=0;rows={};cur=null;$('list').innerHTML='';docTable();scoreKey();more();
   if(!blocks.length)$('list').innerHTML='<p class="legend">보여 줄 덩어리가 없습니다.</p>'}
 function more(){var part=blocks.slice(shown,shown+STEP),box=document.createElement('div');
   box.innerHTML=part.map(function(x,k){return blockHtml(x,shown+k)}).join('');index(box);
