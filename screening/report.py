@@ -566,19 +566,67 @@ def _gain_cells(g: Optional[dict], words: Optional[tuple] = None) -> str:
     return first + second
 
 
-def _headline(res: Result, runs: List[ModelRun]) -> str:
-    """정답으로 잰 결과 가운데 가장 좋은 조합 한 줄."""
-    best = None
+def _candidates(runs: List[ModelRun], views, basis: str) -> List[dict]:
+    """가장 좋은 조합을 고를 후보: 모델 × 보는 방식 × 학습 전/후.  basis: test(시험 문서로 잰 값) | train(시험용이 아닌 문서로 잰 값)"""
+    out = []
     for r in runs:
-        for view, name in VIEWS[:2]:               # 덩어리 단위로 잰 두 방식끼리만 견준다
+        for view, name in views:
+            m = r.metrics.get(view) or {}
+            src = (m.get("test") or {}) if basis == "test" else m
             for when, wname in (("before", "학습 전"), ("after", "학습 후")):
-                m = r.metrics.get(view, {}).get(when)
-                if m is not None and m["auc"] is not None and (best is None or m["auc"] > best[0]):
-                    best = (m["auc"], r.spec["label"], name, wname, m)
-    if best is None:
+                got = src.get(when)
+                if got is not None and got.get("auc") is not None:
+                    out.append({"auc": got["auc"], "pass": got["tuned"]["pass"], "model": r.spec["label"], "view": name, "when": wname})
+    return out
+
+
+def _combo(c: dict, target: str) -> str:
+    return "%s · %s · %s (순위 정확도 %s, %s 찾는 문턱에서 통과 비율 %s)" % (
+        esc(c["model"]), esc(c["view"]), c["when"], _num(c["auc"], 3), target, _pct(c["pass"]))
+
+
+def _headline(res: Result, runs: List[ModelRun]) -> str:
+    """정답으로 잰 결과 가운데 가장 좋은 조합. 무엇으로 골랐는지를 함께 적는다.
+
+    시험 문서로 잰 값이 있으면 그것으로 고른다(학습에 쓰지 않은 글이라 새 문서에서의 결과에 가장 가깝다).
+    덩어리 단위(앞의 두 방식)와 줄 단위는 채점하는 대상이 달라 따로 고른다.
+    순위 정확도가 가장 높은 것을 고르고, 통과 비율이 가장 낮은 조합이 그것과 다르면 함께 적는다.
+    """
+    target = "%.0f%%" % (100 * res.target)
+    basis = "test" if res.test_names and _candidates(runs, VIEWS, "test") else "train"
+    rows = []
+    for group, views in (("덩어리 단위", VIEWS[:2]), ("줄 단위", VIEWS[2:])):
+        cands = _candidates(runs, views, basis)
+        if not cands:
+            continue
+        top = max(cands, key=lambda c: c["auc"])
+        line = "<b>%s</b>: %s" % (group, _combo(top, target))
+        others = [c for c in cands if c["model"] != top["model"]]
+        if others:                                   # 다른 모델과 얼마나 벌어져 있는가
+            nxt = max(others, key=lambda c: c["auc"])
+            gap = top["auc"] - nxt["auc"]
+            line += "<br><span class=\"sub\">다른 모델 가운데 가장 높은 것: %s · %s · %s %s (차이 %s%s)</span>" % (
+                esc(nxt["model"]), esc(nxt["view"]), nxt["when"], _num(nxt["auc"], 3), _num(gap, 3),
+                " — 차이가 작아 비슷한 것으로 보는 편이 안전합니다" if gap < 0.02 else "")
+        low = min(cands, key=lambda c: c["pass"])
+        if low["pass"] < top["pass"] - 1e-9:         # 통과 비율로 고르면 다른 조합이 나올 때
+            line += "<br><span class=\"sub\">통과 비율이 가장 낮은 조합은 다릅니다: %s</span>" % _combo(low, target)
+        rows.append("<li>%s</li>" % line)
+    if not rows:
         return ""
-    return ("<p><b>지금까지 가장 좋은 조합</b>: %s · %s · %s (순위 정확도 %s, '예'의 %.0f%%를 찾는 문턱에서 통과 비율 %s)</p>" % (
-        esc(best[1]), esc(best[2]), best[3], _num(best[0], 3), 100 * res.target, _pct(best[4]["tuned"]["pass"])))
+    if basis == "test":
+        how = "<b>시험 문서로 잰 값</b>으로 골랐습니다(학습에 쓰지 않은 글이라 새 문서에서의 결과에 가장 가깝습니다)."
+    elif res.test_names:
+        how = ("<b>시험용이 아닌 문서로 잰 값</b>으로 골랐습니다(시험용 문서에 '예'와 '아니오' 정답이 모두 있어야 시험 문서로 고를 수 있습니다. "
+               "이 값은 같은 문서의 다른 글로 학습한 분류기가 매긴 것이라 실제보다 조금 좋게 나올 수 있습니다).")
+    else:
+        how = ("<b>정답이 붙은 문서 전체로 잰 값</b>으로 골랐습니다(시험용 문서를 정해 두면 그것으로 고릅니다. "
+               "이 값은 같은 문서의 다른 글로 학습한 분류기가 매긴 것이라 실제보다 조금 좋게 나올 수 있습니다).")
+    return ("<p><b>지금까지 가장 좋은 조합</b></p><ul class=\"steps\">%s</ul>"
+            "<p class=\"sub\"><b>고른 방법</b>: %s 그 가운데 <b>순위 정확도가 가장 높은 조합</b>을 골랐습니다"
+            "(통과 비율은 문턱 한 곳만 보는 값이라 정답이 적을 때 더 흔들립니다. 통과 비율로 고르면 다른 조합이 나올 때는 함께 적습니다). "
+            "덩어리 단위와 줄 단위는 채점하는 대상이 달라 서로 견줄 수 없어 따로 적습니다. "
+            "다른 모델과의 차이가 0.02보다 작으면 비슷하다고 적는데, 0.02는 회사 자료로 맞춘 값이 아니라 어림으로 둔 기준입니다.</p>" % ("".join(rows), how))
 
 
 def _title_section(res: Result, runs: List[ModelRun], has_labels: bool, target: str) -> str:
