@@ -27,6 +27,12 @@ table.cmp th,table.cmp td{padding:5px 10px;text-align:left;vertical-align:middle
 table.cmp th{color:var(--mute);font-weight:600;font-size:12px;border-top:0;vertical-align:bottom;white-space:normal;min-width:56px}
 table.cmp td.n{text-align:right;font-variant-numeric:tabular-nums}
 table.cmp tr.pick td{background:rgba(31,95,191,.07)}
+table.cmp th.grp{text-align:center;border-bottom:1px solid var(--line)}
+table.cmp td.ok{color:var(--tt-ink)}
+table.cmp td.sep,table.cmp th.sep{border-left:1px solid var(--line)}
+table.cmp tr.ref td{color:var(--mute)}
+.abar{display:inline-block;height:8px;background:var(--s1);border-radius:0 4px 4px 0;vertical-align:middle;margin-right:6px}
+tr.ref .abar{background:var(--mute)}
 table.cmp tr.pick td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 table.cmp td.bad{color:var(--rm-ink);font-weight:700}
 table.cmp td.good{color:var(--tt-ink);font-weight:700}
@@ -112,8 +118,18 @@ function two(){
   var row=function(name,r){return '<tr><th>'+name+'</th>'+(any[r]?'<td>'+c[r][0]+'개 <small>(정답 예 '+c[r][1]+')</small></td><td>'+c[r][2]+'개 <small>(정답 예 '+c[r][3]+')</small></td>':'<td colspan="2" style="text-align:left;color:var(--mute)">LLM에 넣지 않음</td>')+'</tr>'};
   $("v-two").innerHTML='<table class="two"><tr><th></th><th>LLM이 예 (남김)</th><th>LLM이 아니오 (덜어냄)</th></tr>'+row("분류기가 예 (통과)",0)+row("분류기가 아니오 (탈락)",1)+'</table>';
 }
+function acc(){
+  var b=R.ans[S.base]||[],c=[[0,0],[0,0]],n=0;
+  R.items.forEach(function(it,i){var a=b[i];if(!a||!it.ps)return;n++;c[it.y===1?0:1][a.v!==0?0:1]++});
+  if(!n){$("v-acc").innerHTML="";return}
+  var right=c[0][0]+c[1][1];
+  $("v-acc").innerHTML='<table class="two"><tr><th>분류기가 예로 본 글 '+n+'개</th><th>LLM이 예</th><th>LLM이 아니오</th><th>합</th></tr>'+
+    '<tr><th>정답이 예</th><td><b>'+c[0][0]+'</b> <small>맞음</small></td><td>'+c[0][1]+' <small>틀림 · 놓침</small></td><td>'+(c[0][0]+c[0][1])+'</td></tr>'+
+    '<tr><th>정답이 아니오</th><td>'+c[1][0]+' <small>틀림 · 못 덜어냄</small></td><td><b>'+c[1][1]+'</b> <small>맞음</small></td><td>'+(c[1][0]+c[1][1])+'</td></tr></table>'+
+    '<p class="legend">정답과 같은 판단: <b>'+Math.round(100*right/n)+'%</b> ('+right+'/'+n+') · 굵은 숫자가 맞은 것입니다.</p>';
+}
 function draw(){
-  fill();two();
+  fill();acc();two();
   var cs=combos(),rows=[],n=0;
   for(var i=0;i<R.items.length;i++){if(!match(i))continue;n++;if(n>S.shown)continue;
     var it=R.items[i],h='<tr class="'+(it.ps?"":"rej")+'"><td class="w">'+esc(it.d)+'<br>'+it.p+'쪽</td><td class="tx" data-i="'+i+'">'+esc(it.t);
@@ -210,6 +226,12 @@ def _headline(res: dict) -> str:
         p.append("<li><b>시간</b>: 글 하나에 %s. 문서 하나에 통과하는 글이 평균 %.0f개이므로 문서 하나에 약 %s.</li>" % (
             _time(m["sec_mean"]), d["passed_per_doc"], _time(m["sec_mean"] * d["passed_per_doc"])))
         done = [x for x in res["combos"] if x["metrics"] and x["done"] == x["total"]]
+        top = _top_acc(done)
+        t = top["metrics"]
+        p.append("<li><b>정답과 같은 판단이 가장 많은 조합</b>: %s · %s %s — %d개 가운데 %d개(%d%%)를 정답과 같게 판단. '예' %d개 가운데 %d개를 놓침. "
+                 "LLM 없이 모두 '예'로 두면 %d%%.</li>" % (
+                     esc(top["llm"]), esc(top["variant"]), esc(top["name"]), t["n"], t["kept_yes"] + t["removed_no"], round(100 * t["acc"]),
+                     t["yes"], t["lost_yes"], round(100 * t["base_acc"])))
         safe = min(done, key=lambda x: (x["metrics"]["lost_yes"], -x["metrics"]["removed_no"], x["metrics"]["sec_mean"]))
         if safe["id"] != best["id"] and safe["metrics"]["lost_yes"] < m["lost_yes"]:
             s = safe["metrics"]
@@ -297,6 +319,57 @@ def _plot(res: dict) -> str:
         keys.append("<span class=\"key c%d\"><i class=\"mk s%d\"></i> %s</span>" % (min(k, 3), k % 4, esc(name)))
     part = "<span class=\"key\">* 는 일부 글만 받은 조합(도중에 멈춤)</span>" if any(c["done"] < c["total"] for c in done) else ""
     return ("<div class=\"viz\">%s<p class=\"legend\">%s<span class=\"key\">글자는 프롬프트 안의 기호</span>%s</p></div>" % ("".join(p), "".join(keys), part))
+
+
+def _top_acc(combos: List[dict]) -> dict:
+    """정답과 같은 판단의 비율이 가장 높은 조합. 끝까지 돈 것을 먼저, 비율이 같으면 놓친 '예'가 적은 쪽, 그다음 빠른 쪽."""
+    return max(combos, key=lambda c: (c["done"] == c["total"], c["metrics"]["acc"], -c["metrics"]["lost_yes"], -c["metrics"]["sec_mean"]))
+
+
+def _confusion(res: dict) -> str:
+    """LLM에 넣은 글(모두 분류기가 '예'로 본 글)을 정답과 LLM의 판단으로 나눈 표와, 정답과 같은 판단의 비율."""
+    done = [c for c in res["combos"] if c["metrics"]]
+    if not done:
+        return ""
+    best = _top_acc(done)
+    first = done[0]["metrics"]
+    same = len({(c["metrics"]["n"], c["metrics"]["yes"]) for c in done}) == 1
+    cnt = lambda v: "%d개" % v if same else ""
+    p = ["<div class=\"wrap viz\"><table class=\"cmp\">"
+         "<tr><th rowspan=\"2\">LLM</th><th rowspan=\"2\">프롬프트 안</th><th rowspan=\"2\">넣은 글<br><small>(분류기는 모두 '예')</small></th>"
+         "<th class=\"grp sep\" colspan=\"2\">정답이 '예'인 글 %s</th><th class=\"grp sep\" colspan=\"2\">정답이 '아니오'인 글 %s</th>"
+         "<th class=\"sep\" rowspan=\"2\">정답과 같은 판단<br><small>(맞은 수 ÷ 넣은 글)</small></th></tr>"
+         "<tr><th class=\"sep\">LLM '예'<br><small>맞음</small></th><th>LLM '아니오'<br><small>틀림 · 놓침</small></th>"
+         "<th class=\"sep\">LLM '아니오'<br><small>맞음 · 잘 덜어냄</small></th><th>LLM '예'<br><small>틀림 · 못 덜어냄</small></th></tr>" % (
+             cnt(first["yes"]), cnt(first["no"]))]
+    pct = lambda a, b: " <small>(%d%%)</small>" % round(100.0 * a / b) if b else ""
+    if same:                                        # 견줄 기준: LLM 없이 분류기 판단 그대로 두면 모두 '예'
+        p.append("<tr class=\"ref\"><td colspan=\"2\">LLM 없이 (분류기 판단 그대로, 모두 '예')</td><td class=\"n\">%d</td>"
+                 "<td class=\"n sep\">%d%s</td><td class=\"n\">0</td><td class=\"n sep\">0</td><td class=\"n\">%d%s</td>"
+                 "<td class=\"n sep\"><i class=\"abar\" style=\"width:%dpx\"></i>%d%% <small>(%d/%d)</small></td></tr>" % (
+                     first["n"], first["yes"], pct(first["yes"], first["yes"]), first["no"], pct(first["no"], first["no"]),
+                     round(80 * first["base_acc"]), round(100 * first["base_acc"]), first["yes"], first["n"]))
+    for c in res["combos"]:
+        m = c["metrics"]
+        if not m:
+            continue
+        right = m["kept_yes"] + m["removed_no"]
+        note = " <small>· %d/%d개만 받음</small>" % (c["done"], c["total"]) if c["done"] < c["total"] else ""
+        p.append("<tr%s><td>%s</td><td><b>%s</b> %s%s</td><td class=\"n\">%d</td>"
+                 "<td class=\"n sep ok\">%d%s</td><td class=\"n%s\">%d%s</td><td class=\"n sep ok\">%d%s</td><td class=\"n\">%d%s</td>"
+                 "<td class=\"n sep\"><i class=\"abar\" style=\"width:%dpx\"></i><b>%d%%</b> <small>(%d/%d)</small></td></tr>" % (
+                     " class=\"pick\"" if c["id"] == best["id"] else "", esc(c["llm"]), esc(c["variant"]), esc(c["name"]), note, m["n"],
+                     m["kept_yes"], pct(m["kept_yes"], m["yes"]), " bad" if m["lost_yes"] else "", m["lost_yes"], pct(m["lost_yes"], m["yes"]),
+                     m["removed_no"], pct(m["removed_no"], m["no"]), m["kept_no"], pct(m["kept_no"], m["no"]),
+                     round(80 * m["acc"]), round(100 * m["acc"]), right, m["n"]))
+    p.append("</table></div>")
+    p.append("<p class=\"legend\">LLM에 넣은 글은 모두 분류기가 '예'로 본 글입니다. 그 글을 정답으로 나누고(예 / 아니오), 다시 LLM의 판단으로 나눴습니다. "
+             "<b>정답과 같은 판단</b>은 '정답 예를 예로' 본 수와 '정답 아니오를 아니오로' 본 수를 더해 넣은 글 수로 나눈 것입니다. 파란 줄은 그 비율이 가장 높은 조합입니다. "
+             "괄호 안의 %%는 그 정답 안에서의 비율입니다.</p>"
+             "<p class=\"legend\"><b>읽을 때 주의</b>: 정답이 '아니오'인 글이 더 많으면, 무엇이든 '아니오'라고만 해도 이 비율은 높게 나옵니다. "
+             "그러니 비율 하나만 보지 말고 <b>놓친 '예'</b>(빨간 숫자)가 얼마나 되는지를 함께 보세요. 이 단계에서 잃은 '예'는 뒤에서 되찾을 수 없습니다. "
+             "읽지 못한 답은 '예'(남김)로 셉니다.</p>")
+    return "".join(p)
 
 
 def _summary(res: dict) -> str:
@@ -423,6 +496,8 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
             "ans": res["answers"], "best": best["id"] if best else ""}
     blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     p = ["<style>%s%s</style>" % (SCREEN_CSS, CSS), _headline(res)]
+    p.append("<h2>정답과 견준 표</h2>")
+    p.append(_confusion(res))
     p.append("<h2>남긴 양과 지킨 '예'</h2>")
     p.append("<p class=\"legend\">분류기를 통과한 글을 100%%로 놓고, 조합마다 얼마나 남겼는지(가로)와 그 안에 '예'를 얼마나 지켰는지(세로)를 찍었습니다. "
              "<b>선보다 왼쪽 위에 있는 점</b>은 분류기 문턱만 올리는 것보다 나은 조합입니다. 점 위에 마우스를 올리면 수치가 나옵니다.</p>")
@@ -439,7 +514,7 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
     p.append("<div class=\"ctl\"><label>LLM <select id=\"v-llm\"></select></label><label>기준으로 볼 안 <select id=\"v-base\"></select></label>"
              "<label>보기 <select id=\"v-filter\">%s</select></label><span class=\"legend\" id=\"v-count\"></span></div>" % "".join(
                  "<option value=\"%s\">%s</option>" % (k, esc(n)) for k, n in filters))
-    p.append("<div id=\"v-two\"></div>")
+    p.append("<div id=\"v-acc\"></div><div id=\"v-two\"></div>")
     if res["setup"]["with_rejected"] and res["setup"]["sample"]:
         p.append("<p class=\"legend\">표본으로 돌릴 때는 통과한 글과 떨어진 글에서 따로 뽑으므로, 위 표의 윗줄과 아랫줄의 크기 비는 실제 비와 다릅니다. 줄 안에서의 비율만 보세요.</p>")
     p.append("<div class=\"wrap\" id=\"v-table\"></div>")

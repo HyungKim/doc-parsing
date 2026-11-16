@@ -103,8 +103,9 @@ def main() -> int:
             if not m:
                 print("  %s · %s %s: %s" % (c["llm"], c["variant"], c["name"], c["error"] or "받은 답 없음"))
                 continue
-            print("  %s · %s %s: %d개 가운데 %d개 남김, '아니오' %d/%d 덜어냄, '예' %d/%d 잃음, 글 하나에 %.1f초" % (
-                c["llm"], c["variant"], c["name"], m["n"], m["kept"], m["removed_no"], m["no"], m["lost_yes"], m["yes"], m["sec_mean"]))
+            print("  %s · %s %s: %d개 가운데 %d개 남김, '아니오' %d/%d 덜어냄, '예' %d/%d 잃음, 정답과 같은 판단 %d%%, 글 하나에 %.1f초" % (
+                c["llm"], c["variant"], c["name"], m["n"], m["kept"], m["removed_no"], m["no"], m["lost_yes"], m["yes"],
+                round(100 * m["acc"]), m["sec_mean"]))
         print("결과 화면: %s" % page.resolve())
         return 0
 

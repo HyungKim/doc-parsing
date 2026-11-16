@@ -576,6 +576,8 @@ def measure(items: List[Item], rows: List[Optional[dict]], think: bool = False) 
     base = _base_kept(y, s, kept_yes)
     out = {"n": n, "yes": yes, "no": no, "kept": kept_n, "kept_yes": kept_yes, "kept_no": kept_n - kept_yes,
            "lost_yes": yes - kept_yes, "removed_no": no - (kept_n - kept_yes),
+           # 정답과 같은 판단의 비율: (정답 예를 예로 + 정답 아니오를 아니오로) ÷ 전체.  base_acc: LLM 없이 모두 '예'로 둘 때
+           "acc": (kept_yes + no - (kept_n - kept_yes)) / float(n), "base_acc": yes / float(n),
            "unknown": sum(1 for _, r in pairs if r["verdict"] is None), "no_prob": sum(1 for _, r in pairs if r["p"] is None),
            "thought": sum(1 for _, r in pairs if r.get("thought")),
            "no_think": sum(1 for _, r in pairs if r.get("tc") == 0) if think else 0,      # 생각 모드를 켰는데 생각 없이 답한 수
