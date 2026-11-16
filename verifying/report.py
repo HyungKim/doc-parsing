@@ -324,6 +324,8 @@ def _summary(res: dict) -> str:
             notes.append("확률을 못 받은 답 %d개" % m["no_prob"])
         if m["thought"]:
             notes.append("생각만 하다 끊긴 답 %d개" % m["thought"])
+        if m.get("no_think"):
+            notes.append("생각 모드를 켰지만 생각 없이 답한 것 %d개(생각 모드가 없는 모델일 수 있음)" % m["no_think"])
         g = m["gain"]
         p.append("<tr%s><td>%s</td><td><b>%s</b> %s</td><td>%s</td><td class=\"n\"><b>%d</b> / %d <small>(%s)</small></td>"
                  "<td class=\"n\">%d / %d <small>(%s)</small></td><td class=\"n%s\">%d / %d</td><td class=\"n\">%s</td><td class=\"n%s\">%s</td>"

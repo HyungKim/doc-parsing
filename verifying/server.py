@@ -77,9 +77,11 @@ code{font:13px ui-monospace,Consolas,monospace;background:var(--bg);border:1px s
 <div class="opt col" id="llms"></div>
 <div class="row"><input type="text" id="addname" placeholder="다른 모델 이름" size="30"><button id="add" class="small">목록에 더하기</button></div>
 <p class="sub">모델을 받을 때만 Ollama가 인터넷을 씁니다(나가는 것은 모델 이름뿐입니다). 이름에 cloud가 붙은 모델은 밖의 서버에서 도는 것이라 쓰지 않습니다.</p>
-<p class="sub"><b>모델에 대해</b>: Qwen3 4B와 8B는 바뀌지 않는 지시문을 한 번만 읽고 글마다 달라지는 부분만 새로 읽습니다.
-Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 배 느려서 넣지 않았습니다.
-4B는 이름에 instruct가 붙은 것을 씁니다. <code>qwen3:4b</code>는 늘 생각부터 하는 판이라 생각 모드를 끌 수 없습니다.</p></div>
+<p class="sub"><b>생각 모드에 대해</b>: <code>qwen3:4b-instruct</code>(4B)는 생각 모드가 <b>없는</b> 모델이라 늘 바로 답합니다.
+<code>qwen3:8b</code>(8B)는 생각 모드를 켜고 끌 수 있는 모델이고, 기본은 끕니다. 그래서 '켠 것도 함께 돌려 견주기'는 8B에만 나옵니다.
+(이름에 instruct가 없는 <code>qwen3:4b</code>는 늘 생각부터 하는 다른 판이라 쓰지 않습니다.)</p>
+<p class="sub"><b>속도에 대해</b>: Qwen3 4B와 8B는 바뀌지 않는 지시문을 한 번만 읽고 글마다 달라지는 부분만 새로 읽습니다.
+Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 배 느려서 넣지 않았습니다.</p></div>
 
 <div class="card"><h2>3. 프롬프트 안</h2>
 <div class="opt col" id="variants"></div>
@@ -155,7 +157,7 @@ function render(){
   let hinted=false;
   $("llms").innerHTML=llmlist().map(x=>{
     const on=S.sel.llms.indexOf(x.name)>=0,m=x.m,tk=x.name+st.think_suffix,ton=S.sel.llms.indexOf(tk)>=0;
-    const info=m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB${m.thinking?" · 생각 모드가 있는 모델 (끄고 씀)":""}`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(x.name)}">받기</button>`;
+    const info=m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB${m.thinking?" · 생각 모드를 켜고 끌 수 있는 모델 (기본은 끔)":" · 생각 모드가 없는 모델 (바로 답함)"}`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(x.name)}">받기</button>`;
     let h=`<div><label><input type="checkbox" data-llm="${esc(x.name)}" ${on?"checked":""}><span><b>${esc(x.name)}</b>${x.note?" — "+esc(x.note):""}<small>${info}</small></span></label>`;
     if(x.think)h+=`<label class="sub2"><input type="checkbox" data-llm="${esc(tk)}" ${ton?"checked":""}><span>${esc(x.name)} — <b>생각 모드를 켠 것</b>도 함께 돌려 견주기<small>${hinted?"위와 같습니다. 매우 느립니다.":"답하기 전에 풀이를 길게 써서 글 하나에 수백 토큰이 더 듭니다. GPU가 없는 PC에서는 글 하나에 몇 분이 걸릴 수 있습니다. 글 수를 50개로, 안을 한두 개로 줄여서 먼저 돌려 보세요. 너무 오래 걸리면 '멈추기'를 누르면 됩니다."}</small></span></label>`;
     if(x.think)hinted=true;

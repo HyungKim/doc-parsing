@@ -154,6 +154,15 @@ def _same(a: str, b: str) -> bool:
     return norm(a.strip().lower()) == norm(b.strip().lower())
 
 
+def has_thinking(name: str, capabilities: list) -> bool:
+    """켜고 끌 수 있는 생각 모드가 있는 모델인가.
+
+    Ollama가 적어 둔 능력만으로는 알 수 없다. qwen3:4b-instruct처럼 생각하지 않는 모델에도 '생각 모드 있음'이라고 적혀 나오는
+    버전이 있다(같은 모델을 두고 목록과 상세 정보가 서로 다르게 답하기도 한다). 이름에 instruct가 든 모델은 바로 답하도록 만든 판이므로 없다고 본다.
+    """
+    return "thinking" in (capabilities or []) and "instruct" not in name.lower()
+
+
 def models() -> List[dict]:
     """받아 둔 모델 가운데 글을 쓰는 모델. [{"name", "size", "digest", "params", "quant", "thinking", "cloud"}]"""
     out = []
@@ -168,7 +177,7 @@ def models() -> List[dict]:
         cloud = bool(m.get("remote_host") or m.get("remote_model")) or is_cloud_name(name)
         out.append({"name": name, "size": int(m.get("size") or 0), "digest": str(m.get("digest") or "")[:12],
                     "params": details.get("parameter_size", ""), "quant": details.get("quantization_level", ""),
-                    "thinking": "thinking" in caps, "cloud": cloud})
+                    "thinking": has_thinking(name, caps), "cloud": cloud})
     return out
 
 

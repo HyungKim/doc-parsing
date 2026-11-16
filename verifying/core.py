@@ -533,6 +533,7 @@ def _ask(m: dict, system: str, user: str, v: prompts.Variant, handle: Optional[o
     sec = max(0.0, (out["total_s"] - out["load_s"]) if out["total_s"] else wall)      # 모델을 불러오는 시간은 뺀다
     return {"verdict": ans["verdict"], "p": None if ans["p"] is None else round(ans["p"], 5), "reason": reason,
             "content": out["content"][:400], "thought": bool(out["thinking"]) and not out["content"].strip(),
+            "tc": len(out["thinking"]),                 # 생각의 글자 수(생각 모드를 켰는데 0이면 생각하지 않고 답한 것)
             "sec": round(sec, 3), "load": round(out["load_s"], 2), "in": out["in"], "out": out["out"],
             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -560,8 +561,8 @@ def _curve(y: np.ndarray, s: np.ndarray) -> List[list]:
     return [[0.0, 0.0]] + pts
 
 
-def measure(items: List[Item], rows: List[Optional[dict]]) -> Optional[dict]:
-    """모델 × 안 하나의 결과를 잰다. 분류기가 통과시킨 글 가운데 답을 받은 것만 쓴다."""
+def measure(items: List[Item], rows: List[Optional[dict]], think: bool = False) -> Optional[dict]:
+    """모델 × 안 하나의 결과를 잰다. 분류기가 통과시킨 글 가운데 답을 받은 것만 쓴다. think: 생각 모드를 켠 조합인가"""
     pairs = [(it, r) for it, r in zip(items, rows) if it.passed and r is not None]
     if not pairs:
         return None
@@ -577,6 +578,7 @@ def measure(items: List[Item], rows: List[Optional[dict]]) -> Optional[dict]:
            "lost_yes": yes - kept_yes, "removed_no": no - (kept_n - kept_yes),
            "unknown": sum(1 for _, r in pairs if r["verdict"] is None), "no_prob": sum(1 for _, r in pairs if r["p"] is None),
            "thought": sum(1 for _, r in pairs if r.get("thought")),
+           "no_think": sum(1 for _, r in pairs if r.get("tc") == 0) if think else 0,      # 생각 모드를 켰는데 생각 없이 답한 수
            "base_kept": base, "gain": None if base is None else base - kept_n, "gain_lo": None, "gain_hi": None,
            "auc_llm": learn.auc(y, p) if yes and no else None, "auc_cls": learn.auc(y, s) if yes and no else None,
            "curve": _curve(y, p) if yes else []}
@@ -616,7 +618,7 @@ def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str
             rows = got.get(cid) or []
             combos.append({"id": cid, "llm": m["label"], "variant": v.key, "name": v.name,
                            "done": sum(1 for r in rows if r is not None), "total": len(rows),
-                           "error": errors.get(cid, ""), "metrics": measure(chosen, rows)})
+                           "error": errors.get(cid, ""), "metrics": measure(chosen, rows, m["think"])})
     return {
         "made": time.strftime("%Y-%m-%d %H:%M:%S"), "stopped": stopped, "ollama": state.get("version", ""),
         "setup": {"classifier": setup.classifier, "view": setup.view, "thr_mode": setup.thr_mode, "sample": int(setup.sample or 0),
