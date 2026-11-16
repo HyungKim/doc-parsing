@@ -164,8 +164,9 @@ class _TwoStores:
 class Scorer:
     """고른 모델·크기·판단 방법으로 문서에 점수를 매긴다. 불러온 저장소는 들고 있다가 다시 쓴다."""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, own: str = "mark"):
         self.cfg = cfg
+        self.own = own                              # 새로 계산한 임베딩을 적는 곳: out/<own>/cache
         self._stores: Dict[str, _TwoStores] = {}
 
     def _store(self, spec: dict) -> _TwoStores:
@@ -173,7 +174,7 @@ class Scorer:
         if spec["key"] not in self._stores:
             meta = {"repo": spec["repo"], "max_len": self.cfg.max_len, "prefix": spec.get("prefix", "")}
             out = Path(self.cfg.out_dir)
-            self._stores[spec["key"]] = _TwoStores(models.Store(out / "mark" / "cache" / (spec["key"] + ".npz"), meta),
+            self._stores[spec["key"]] = _TwoStores(models.Store(out / self.own / "cache" / (spec["key"] + ".npz"), meta),
                                                    models.Store(out / "screen" / "cache" / (spec["key"] + ".npz"), meta))
         return self._stores[spec["key"]]
 
