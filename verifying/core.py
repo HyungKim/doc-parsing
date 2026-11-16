@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,9 +36,12 @@ DEFAULT_VIEW = "line"
 # 화면에 늘 보여 주는 LLM. 첫 번째가 기본으로 켜진다. 받아 둔 다른 모델도 화면에서 고를 수 있다
 # Qwen3.5는 넣지 않는다: 모델 구조상 글마다 프롬프트 전체를 다시 읽어서, 같은 지시문에 글만 바꿔 묻는 이 일에서는 몇 배 느리다.
 # 4B는 이름에 instruct가 붙은 것을 쓴다. Ollama의 qwen3:4b는 늘 생각부터 하는 판이라 생각 모드를 끌 수 없다.
-OFFERED_LLMS = [("qwen3:4b-instruct", "기본. Qwen3 4B · Apache 2.0 · 내려받기 약 2.5GB"),
-                ("qwen3:8b", "선택. Qwen3 8B · Apache 2.0 · 내려받기 약 5.2GB · 더 크고 느림")]
+# 셋째 값: 생각 모드가 있는 모델인가(있으면 화면에서 '생각 모드를 켜고도 돌리기'를 고를 수 있다)
+OFFERED_LLMS = [("qwen3:4b-instruct", "기본. Qwen3 4B · Apache 2.0 · 내려받기 약 2.5GB", False),
+                ("qwen3:8b", "선택. Qwen3 8B · Apache 2.0 · 내려받기 약 5.2GB · 더 크고 느림", True)]
 DEFAULT_LLMS = [OFFERED_LLMS[0][0]]
+THINK_SUFFIX = "+think"       # 모델 이름 뒤에 붙이면 생각 모드를 켜고 돌린다 (예: qwen3:8b+think). 붙이지 않으면 끄고 돌린다
+THINK_TOKENS = 2000           # 생각 모드에서 생각에 쓸 수 있는 토큰 수. 이만큼 쓰고도 답에 이르지 못하면 그 답은 '읽지 못한 답'이 된다
 DEFAULT_SAMPLE = 200
 N_EXAMPLES = 3                # 프롬프트 예시: '예' 3개, '아니오' 3개
 BOOT = 1000                   # 차이의 범위를 어림할 때 다시 뽑는 횟수
@@ -84,8 +88,66 @@ class Item:
     order: int = 0            # 문서에 나온 순서
 
 
-class Stopped(Exception):
-    pass
+class Stop:
+    """멈추라는 신호. 켜는 순간, 지금 LLM에 묻고 있는 요청도 끊는다(그 글이 끝나기를 기다리지 않는다)."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self.call: Optional[ollama.Call] = None       # 지금 묻고 있는 요청
+
+    def set(self) -> None:
+        self._event.set()
+        call = self.call
+        if call is not None:
+            call.cancel()
+
+    def clear(self) -> None:
+        self._event.clear()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
+def split_entry(entry: str) -> tuple:
+    """화면이나 명령에서 고른 LLM 항목 → (모델 이름, 생각 모드를 켜는가)"""
+    entry = entry.strip()
+    if entry.lower().endswith(THINK_SUFFIX):
+        return entry[:-len(THINK_SUFFIX)].strip(), True
+    return entry, False
+
+
+def llm_entries(names: List[str], listed: List[dict], strict: bool = True) -> List[dict]:
+    """고른 LLM 항목들을 Ollama의 모델 정보와 맞춘다.
+
+    반환: [{"id"(답을 보관하는 이름: 모델 이름, 생각 모드를 켜면 뒤에 +think), "name", "think", "label"(화면에 보이는 이름), "digest", …}]
+    strict면 받지 않은 모델·클라우드 모델·생각 모드가 없는 모델에 생각 모드를 켠 경우를 오류로 알린다.
+    """
+    out: List[dict] = []
+    for raw in names:
+        name, think = split_entry(raw)
+        if not name:
+            continue
+        if strict:
+            m = ollama.check_model(name, listed)
+            if think and not m["thinking"]:
+                raise ollama.OllamaError("'%s' 은(는) 생각 모드가 없는 모델입니다. 생각 모드를 켜는 선택을 꺼 주세요." % m["name"])
+        else:
+            m = ollama.find_model(name, listed) or {"name": name, "size": 0, "digest": "", "params": "", "quant": "",
+                                                    "thinking": False, "cloud": False}
+        e = dict(m, id=m["name"] + (THINK_SUFFIX if think else ""), think=think,
+                 label=m["name"] + (" · 생각 켬" if think else ""))
+        if not any(x["id"] == e["id"] for x in out):
+            out.append(e)
+    return out
+
+
+def budget(m: dict, v: prompts.Variant) -> int:
+    """답 하나에 쓸 수 있는 출력 토큰 수."""
+    return v.max_tokens + (THINK_TOKENS if m.get("think") else 0)
+
+
+def _key(m: dict, plan: dict, user: str) -> str:
+    return answer_key(m["id"], m["digest"], plan["system"], user, budget(m, plan["variant"]))
 
 
 # ---------------------------------------------------------------- 글과 분류기 점수
@@ -309,14 +371,13 @@ def prepare(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], N
 
 
 def todo_counts(prep: dict, llms: List[dict], answers: Answers) -> Dict[str, int]:
-    """모델 × 안마다 아직 받지 않은 답의 수. llms: [{"name", "digest"}] (받지 않은 모델은 digest가 빈 글)"""
+    """모델 × 안마다 아직 받지 않은 답의 수. llms: llm_entries가 준 목록 (받지 않은 모델은 digest가 빈 글)"""
     out = {}
     for m in llms:
         for plan in prep["plans"]:
             v = plan["variant"]
-            n = sum(1 for u in plan["users"]
-                    if not m["digest"] or answers.get(answer_key(m["name"], m["digest"], plan["system"], u, v.max_tokens)) is None)
-            out["%s|%s" % (m["name"], v.key)] = n
+            n = sum(1 for u in plan["users"] if not m["digest"] or answers.get(_key(m, plan, u)) is None)
+            out["%s|%s" % (m["id"], v.key)] = n
     return out
 
 
@@ -324,18 +385,19 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
         progress: Optional[Callable[[int, int], None]] = None) -> dict:
     """고른 모델 × 안으로 LLM에 묻고 결과를 모은다. 반환: 결과(리포트가 읽는 모양)
 
-    stop: 멈추라는 신호(threading.Event).  progress(받은 수, 받을 수): 새로 받는 답의 진행 상황
+    stop: 멈추라는 신호(Stop). 켜지면 묻고 있던 글도 바로 끊고, 그때까지 받은 답으로 결과를 만든다.
+    progress(받은 수, 받을 수): 새로 받는 답의 진행 상황
     """
     state = ollama.ensure_running(log)
     if not state["ok"]:
         raise ValueError(state["error"])
     if not setup.llms:
         raise ValueError("LLM을 하나 이상 골라 주세요.")
-    listed = ollama.models()
-    llms = []
-    for name in setup.llms:                        # 쓸 수 없는 모델이면 무거운 일을 하기 전에 알린다
-        m = ollama.check_model(name, listed)
-        llms.append(dict(m, license=ollama.license_of(m["name"])))
+    llms = llm_entries(setup.llms, ollama.models())            # 쓸 수 없는 모델이면 무거운 일을 하기 전에 알린다
+    if not llms:
+        raise ValueError("LLM을 하나 이상 골라 주세요.")
+    for m in llms:
+        m["license"] = ollama.license_of(m["name"])
     log("분류기 점수를 모으는 중…")
     prep = prepare(env, setup, scorer, log, data)
     chosen = prep["chosen"]
@@ -355,31 +417,40 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
     # 남은 시간 어림: 조합마다 지금까지 잰 시간의 평균을 쓴다. 아직 재지 않은 조합은 같은 종류(짧은 답/긴 답)의 평균으로 대신한다
     left_n = dict(todo)
     timing: Dict[str, list] = {}                   # 조합 → [걸린 초의 합, 개수]
-    kinds = {"%s|%s" % (m["name"], plan["variant"].key): plan["variant"].long for m in llms for plan in prep["plans"]}
+    kinds = {"%s|%s" % (m["id"], plan["variant"].key): (plan["variant"].long, m["think"]) for m in llms for plan in prep["plans"]}
     for m in llms:                                 # 받아 둔 답의 시간도 어림에 쓴다
         for plan in prep["plans"]:
             v = plan["variant"]
-            secs = [r["sec"] for u in plan["users"] for r in [answers.get(answer_key(m["name"], m["digest"], plan["system"], u, v.max_tokens))] if r]
+            secs = [r["sec"] for u in plan["users"] for r in [answers.get(_key(m, plan, u))] if r]
             if secs:
-                timing["%s|%s" % (m["name"], v.key)] = [float(sum(secs)), len(secs)]
+                timing["%s|%s" % (m["id"], v.key)] = [float(sum(secs)), len(secs)]
 
     def eta() -> str:
         known = {c: t[0] / t[1] for c, t in timing.items() if t[1] >= 3}
         if not known:
             return ""
-        by_kind = {}
+        by_kind: Dict[tuple, list] = {}
         for c, sec in known.items():
-            by_kind.setdefault(kinds.get(c, False), []).append(sec)
-        every = sum(known.values()) / len(known)
-        guess = lambda c: known.get(c) or (sum(by_kind[kinds[c]]) / len(by_kind[kinds[c]]) if by_kind.get(kinds.get(c)) else every)
-        return " · 남은 시간 %s" % _left(sum(n * guess(c) for c, n in left_n.items() if n > 0))
+            by_kind.setdefault(kinds.get(c), []).append(sec)
+        seconds, unknown = 0.0, False
+        for c, n in left_n.items():
+            if n <= 0:
+                continue
+            same = by_kind.get(kinds.get(c))
+            if c in known:
+                seconds += n * known[c]
+            elif same:
+                seconds += n * sum(same) / len(same)
+            else:                                  # 아직 한 번도 재 보지 않은 종류(예: 생각 모드)는 어림하지 않는다
+                unknown = True
+        return " · 남은 시간 %s%s" % (_left(seconds), " + 아직 재 보지 않은 조합" if unknown else "")
     for m in llms:
         for plan in prep["plans"]:
             v = plan["variant"]
-            cid = "%s|%s" % (m["name"], v.key)
+            cid = "%s|%s" % (m["id"], v.key)
             rows: List[Optional[dict]] = []
             for i, user in enumerate(plan["users"]):
-                key = answer_key(m["name"], m["digest"], plan["system"], user, v.max_tokens)
+                key = _key(m, plan, user)
                 rec = answers.get(key)
                 if rec is None and not stopped and cid not in errors:
                     if stop is not None and stop.is_set():
@@ -388,9 +459,16 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
                         if last and last != m["name"]:
                             ollama.unload(last)        # 메모리에 모델을 하나만 올려 둔다
                         last = m["name"]
-                        log("%s · %s · %d/%d번째 글 (전체 %d/%d%s)" % (m["name"], v.label, i + 1, len(plan["users"]), done + 1, total, eta()))
+                        log("%s · %s · %d/%d번째 글 (전체 %d/%d%s)" % (m["label"], v.label, i + 1, len(plan["users"]), done + 1, total, eta()))
+                        handle = ollama.Call()
+                        if stop is not None:
+                            stop.call = handle
                         try:
-                            rec = _ask(m["name"], plan["system"], user, v)
+                            if stop is not None and stop.is_set():
+                                raise ollama.Cancelled()
+                            rec = _ask(m, plan["system"], user, v, handle)
+                        except ollama.Cancelled:       # 멈추기: 묻고 있던 글은 버리고 여기서 끝낸다
+                            stopped, rec = True, None
                         except ollama.OllamaError as exc:
                             errors[cid] = str(exc)
                             left_n[cid] = 0
@@ -403,25 +481,57 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
                             t[0], t[1] = t[0] + rec["sec"], t[1] + 1
                             if progress:
                                 progress(done, total)
+                        finally:
+                            if stop is not None:
+                                stop.call = None
                 rows.append(rec)
             got[cid] = rows
+    if stopped:
+        log("멈췄습니다. 받은 답까지로 결과를 만듭니다…")
     if last:
         ollama.unload(last)                            # 끝나면 메모리를 돌려준다
     return assemble(env, setup, prep, llms, got, errors, stopped, state)
 
 
-def _ask(model: str, system: str, user: str, v: prompts.Variant) -> dict:
+def _answer_part(content: str, logprobs: list) -> list:
+    """생각 모드의 답에서, 생각이 끝난 뒤 실제 답에 해당하는 토큰들만 고른다(확률은 그 자리에서 읽어야 한다)."""
+    toks = [str(e.get("token", "")) for e in logprobs or []]
+    joined, c = "".join(toks), content.strip()
+    if not c:
+        return []
+    body = joined.rstrip()
+    pos = len(body) - len(c) if body.endswith(c) else joined.rfind(c)
+    if pos < 0:
+        return []
+    at = 0
+    for i, t in enumerate(toks):
+        if at <= pos < at + len(t):
+            return logprobs[i:]
+        at += len(t)
+    return []
+
+
+def _ask(m: dict, system: str, user: str, v: prompts.Variant, handle: Optional[ollama.Call] = None) -> dict:
+    think = bool(m.get("think"))
+    n, timeout = budget(m, v), (3600.0 if think else 900.0)
     t0 = time.time()
     try:
-        out = ollama.chat(model, system, user, v.max_tokens)
+        out = ollama.chat(m["name"], system, user, n, think, handle, timeout)
     except ollama.OllamaError:
+        if handle is not None and handle.cancelled:
+            raise ollama.Cancelled()
         time.sleep(2.0)                                # 한 번은 다시 해 본다
         t0 = time.time()
-        out = ollama.chat(model, system, user, v.max_tokens)
+        out = ollama.chat(m["name"], system, user, n, think, handle, timeout)
     wall = time.time() - t0
-    ans = prompts.read_answer(out["content"], out["logprobs"], v.long)
+    logprobs = _answer_part(out["content"], out["logprobs"]) if think else out["logprobs"]
+    ans = prompts.read_answer(out["content"], logprobs, v.long)
+    reason = ans["reason"]
+    if think and out["thinking"]:                      # 생각의 끝부분(결론이 있는 곳)을 이유 자리에 남긴다
+        tail = " ".join(out["thinking"].split())
+        reason = (reason + " " if reason else "") + "〔생각의 끝부분〕 " + ("… " if len(tail) > 240 else "") + tail[-240:]
     sec = max(0.0, (out["total_s"] - out["load_s"]) if out["total_s"] else wall)      # 모델을 불러오는 시간은 뺀다
-    return {"verdict": ans["verdict"], "p": None if ans["p"] is None else round(ans["p"], 5), "reason": ans["reason"],
+    return {"verdict": ans["verdict"], "p": None if ans["p"] is None else round(ans["p"], 5), "reason": reason,
             "content": out["content"][:400], "thought": bool(out["thinking"]) and not out["content"].strip(),
             "sec": round(sec, 3), "load": round(out["load_s"], 2), "in": out["in"], "out": out["out"],
             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -502,15 +612,15 @@ def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str
     for m in llms:
         for plan in prep["plans"]:
             v = plan["variant"]
-            cid = "%s|%s" % (m["name"], v.key)
+            cid = "%s|%s" % (m["id"], v.key)
             rows = got.get(cid) or []
-            combos.append({"id": cid, "llm": m["name"], "variant": v.key, "name": v.name,
+            combos.append({"id": cid, "llm": m["label"], "variant": v.key, "name": v.name,
                            "done": sum(1 for r in rows if r is not None), "total": len(rows),
                            "error": errors.get(cid, ""), "metrics": measure(chosen, rows)})
     return {
         "made": time.strftime("%Y-%m-%d %H:%M:%S"), "stopped": stopped, "ollama": state.get("version", ""),
         "setup": {"classifier": setup.classifier, "view": setup.view, "thr_mode": setup.thr_mode, "sample": int(setup.sample or 0),
-                  "with_rejected": bool(setup.with_rejected), "llms": [m["name"] for m in llms],
+                  "with_rejected": bool(setup.with_rejected), "llms": [m["label"] for m in llms],
                   "variants": [p["variant"].key for p in prep["plans"]]},
         "classifier": {"key": setup.classifier, "label": spec.get("label", setup.classifier), "view": setup.view,
                        "view_name": mcore.VIEW_NAME[setup.view], "unit": data["unit"], "trained": clf.get("trained", ""),
@@ -518,7 +628,7 @@ def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str
                        "title_weight": float(cfg.title_weight or 0.0), "target": float(cfg.target)},
         "data": dict(prep["counts"], part=data["part"], docs_used=data["use_names"],
                      base_curve=_curve(y, s) if len(y) and (y == 1).any() else []),
-        "llms": [{"name": m["name"], "digest": m["digest"], "params": m["params"], "quant": m["quant"],
+        "llms": [{"name": m["label"], "model": m["name"], "think": m["think"], "digest": m["digest"], "params": m["params"], "quant": m["quant"],
                   "size": m["size"], "license": m.get("license", ""), "thinking": m["thinking"]} for m in llms],
         "variants": [{"key": p["variant"].key, "name": p["variant"].name, "parts": p["variant"].parts, "long": p["variant"].long,
                       "max_tokens": p["variant"].max_tokens, "system": p["system"], "sample_user": (p["users"] or [""])[0],

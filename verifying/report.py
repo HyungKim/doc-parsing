@@ -275,7 +275,7 @@ def _plot(res: dict) -> str:
         m = cs[0]["metrics"]
         tip = "%s · %s: %d개 가운데 %d개 남김, '예' %d개 가운데 %d개 지킴" % (llm, ", ".join(c["variant"] + " " + c["name"] for c in cs), m["n"], m["kept"], m["yes"], m["kept_yes"])
         p.append(_shape(fx(x), fy(y), k, "c%d" % min(k, 3), tip))
-        text = "·".join(c["variant"] for c in cs)
+        text = "·".join(c["variant"] + ("*" if c["done"] < c["total"] else "") for c in cs)
         w, px, py = 8.0 * len(text) + 2, fx(x), fy(y)
         spots = [(10, -6), (10, 15), (-10, -6), (-10, 15), (10, -19), (10, 28), (-10, -19), (-10, 28), (24, 5), (-24, 5)]
         best_spot = None
@@ -295,7 +295,8 @@ def _plot(res: dict) -> str:
     keys = ["<span class=\"key\"><i class=\"ln\"></i> 분류기 문턱만 올릴 때</span>"]
     for k, name in enumerate(llms):
         keys.append("<span class=\"key c%d\"><i class=\"mk s%d\"></i> %s</span>" % (min(k, 3), k % 4, esc(name)))
-    return ("<div class=\"viz\">%s<p class=\"legend\">%s<span class=\"key\">글자는 프롬프트 안의 기호</span></p></div>" % ("".join(p), "".join(keys)))
+    part = "<span class=\"key\">* 는 일부 글만 받은 조합(도중에 멈춤)</span>" if any(c["done"] < c["total"] for c in done) else ""
+    return ("<div class=\"viz\">%s<p class=\"legend\">%s<span class=\"key\">글자는 프롬프트 안의 기호</span>%s</p></div>" % ("".join(p), "".join(keys), part))
 
 
 def _summary(res: dict) -> str:
@@ -354,7 +355,8 @@ def _choices(res: dict) -> str:
          "저장해 둔 분류기를 그때그때 읽습니다. 다시 학습하면 다음 실행부터 새 분류기를 씁니다.", "다른 모델·크기는 화면에서 고름"),
         ("분류기 문턱", "%.4f — %s" % (c["threshold"], esc(c["thr_note"])),
          "걸러내기 비교 화면의 '%d%%를 찾는 문턱'과 같은 자리라서, 그 화면의 통과 수와 이어집니다." % pct, "지난 학습의 문턱, 0.5, 직접 정하기"),
-        ("생각 모드", "끔", "켜면 답 하나에 수백 토큰을 더 써서 몇 배 느려집니다.", "켜고 정확도가 오르는지 보기(시간이 크게 듦)"),
+        ("생각 모드", "기본은 끔", "켜면 답 하나에 수백 토큰을 더 써서 수십 배 느려집니다. 생각 모드가 있는 모델(Qwen3 8B)은 화면에서 '켠 것도 함께 돌리기'를 고르면 끈 것과 나란히 견줍니다. 켠 답의 확률은 생각이 끝난 뒤 답 자리에서 읽습니다.",
+         "켠 것도 함께 돌려 정확도가 오르는지 보기(시간이 크게 듦)"),
         ("답 받는 방식", "'예/아니오' 한 단어 + 그 자리의 확률", "출력이 짧아 빠르고, 확률이 있어 순위로도 견줄 수 있습니다. 온도는 0이라 다시 돌려도 같은 답입니다.", "이유를 함께 받기(안 F)"),
         ("읽지 못한 답", "덜어내지 않고 남김", "이 단계의 목적은 '예'를 놓치지 않는 것이라, 모를 때는 사람에게 넘깁니다.", "덜어내기"),
         ("넣는 글의 길이", "판단할 글 %d자, 주변 글 %d자까지. 모델이 한 번에 읽는 길이 %d토큰" % (prompts.TEXT_LIMIT, prompts.CONTEXT_LIMIT, ollama.NUM_CTX),
@@ -378,9 +380,10 @@ def _choices(res: dict) -> str:
 def _models(res: dict) -> str:
     p = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>LLM</th><th>크기</th><th>줄인 방식</th><th>파일 크기</th><th>라이선스</th><th>생각 모드</th></tr>"]
     for m in res["llms"]:
+        think = "켬 (답하기 전에 풀이를 씀, 최대 %d토큰)" % core.THINK_TOKENS if m.get("think") else ("끔 (있는 모델이지만 끄고 씀)" if m["thinking"] else "없는 모델")
         p.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class=\"n\">%.1f GB</td><td>%s</td><td>%s</td></tr>" % (
             esc(m["name"]), esc(m["params"] or "-"), esc(m["quant"] or "-"), m["size"] / 1e9,
-            esc(m["license"] or "모델에 적혀 있지 않음"), "있음(끄고 씀)" if m["thinking"] else "없음"))
+            esc(m["license"] or "모델에 적혀 있지 않음"), think))
     p.append("</table></div><p class=\"legend\">라이선스는 모델 파일에 적힌 값을 그대로 보여 준 것입니다.</p>")
     return "".join(p)
 

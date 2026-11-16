@@ -35,7 +35,8 @@ def main() -> int:
     ap.add_argument("--threshold-mode", choices=["test90", "saved", "half", "custom"], default="test90",
                     help="분류기 문턱: test90(시험 문서에서 '예'의 90%%를 찾는 문턱, 기본) | saved(지난 학습의 문턱) | half(0.5) | custom")
     ap.add_argument("--threshold", type=float, help="--threshold-mode custom 일 때의 문턱")
-    ap.add_argument("--llm", default=",".join(core.DEFAULT_LLMS), help="LLM 이름(Ollama). 쉼표로 여러 개 (기본: %s)" % ",".join(core.DEFAULT_LLMS))
+    ap.add_argument("--llm", default=",".join(core.DEFAULT_LLMS),
+                    help="LLM 이름(Ollama). 쉼표로 여러 개 (기본: %s). 이름 뒤에 +think 를 붙이면 생각 모드를 켜고 돌림 (예: qwen3:8b+think)" % ",".join(core.DEFAULT_LLMS))
     ap.add_argument("--prompts", default="", help="돌릴 프롬프트 안의 기호. 쉼표로 여러 개 (기본: 모두)")
     ap.add_argument("--sample", type=int, default=core.DEFAULT_SAMPLE, help="LLM에 넣을 글 수 (기본 %d, 0이면 통과한 글 전부)" % core.DEFAULT_SAMPLE)
     ap.add_argument("--with-rejected", action="store_true", help="분류기가 떨어뜨린 글도 같은 수만큼 LLM에 넣어 본다")
@@ -88,10 +89,14 @@ def main() -> int:
                     return
             print(msg, flush=True)
 
+        stop = core.Stop()
         try:
-            res = core.run(env, setup, mcore.Scorer(cfg, "verify"), log)
+            res = core.run(env, setup, mcore.Scorer(cfg, "verify"), log, stop)
         except (ValueError, ollama.OllamaError, ModelMissing) as exc:
             raise SystemExit("[오류] %s" % exc)
+        except KeyboardInterrupt:                  # Ctrl+C: 묻고 있던 요청을 끊고 끝낸다. 받은 답은 보관되어 있다
+            stop.set()
+            raise SystemExit("\n멈췄습니다. 그때까지 받은 답은 보관되어 있어서, 다시 실행하면 이어서 받습니다.")
         page = report.write(env, res)
         for c in res["combos"]:
             m = c["metrics"]

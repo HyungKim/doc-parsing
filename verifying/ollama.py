@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -31,6 +33,36 @@ _think_ok: Dict[str, bool] = {}                                             # �
 
 class OllamaError(Exception):
     """Ollama와 주고받다 생긴 문제. 글은 사용자에게 그대로 보여 준다."""
+
+
+class Cancelled(Exception):
+    """사용자가 멈추라고 해서 도중에 그만둠."""
+
+
+class Call:
+    """묻고 있는 요청 하나의 손잡이. 다른 쪽(멈추기 단추)에서 cancel()을 부르면 기다리던 요청이 바로 끊긴다.
+
+    연결이 끊기면 Ollama도 그 글의 계산을 그만둔다(끝까지 계산하느라 PC를 붙잡고 있지 않는다).
+    """
+
+    def __init__(self) -> None:
+        self.conn: Optional[http.client.HTTPConnection] = None
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        conn = self.conn
+        if conn is None:
+            return
+        try:
+            if conn.sock is not None:
+                conn.sock.shutdown(socket.SHUT_RDWR)       # 답을 기다리며 멈춰 있는 쪽을 깨운다
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def port() -> int:
@@ -174,8 +206,8 @@ def license_of(name: str) -> str:
     return ""
 
 
-def pull(name: str, progress: Callable[[str], None]) -> None:
-    """모델을 내려받는다(이때만 Ollama가 인터넷을 쓴다)."""
+def pull(name: str, progress: Callable[[str], None], stop=None) -> None:
+    """모델을 내려받는다(이때만 Ollama가 인터넷을 쓴다). stop이 켜지면 그만둔다(받던 부분은 Ollama가 남겨 두어 다음에 이어 받는다)."""
     if is_cloud_name(name):
         raise OllamaError("클라우드 모델은 받지 않습니다: %s" % name)
     req = urllib.request.Request(base_url() + "/api/pull", data=json.dumps({"model": name, "stream": True}).encode("utf-8"),
@@ -183,6 +215,8 @@ def pull(name: str, progress: Callable[[str], None]) -> None:
     try:
         with _opener.open(req, timeout=120) as r:
             for raw in r:
+                if stop is not None and stop.is_set():
+                    raise Cancelled()
                 try:
                     msg = json.loads(raw.decode("utf-8"))
                 except ValueError:
@@ -210,8 +244,46 @@ def unload(name: str) -> None:
 
 # ---------------------------------------------------------------- 묻기
 
-def chat(model: str, system: str, user: str, max_tokens: int, timeout: float = 900.0) -> dict:
-    """글 하나를 묻는다. 생각 모드는 끄고(느려진다), 늘 같은 답이 나오게 온도 0으로 한다.
+def _ask(body: dict, timeout: float, handle: Optional[Call]) -> dict:
+    """/api/chat 에 묻는다. 프록시를 거치지 않는 직접 연결이고, handle.cancel()로 도중에 끊을 수 있다."""
+    if handle is not None and handle.cancelled:
+        raise Cancelled()
+    conn = http.client.HTTPConnection(HOST, port(), timeout=timeout)
+    if handle is not None:
+        handle.conn = conn
+    try:
+        conn.request("POST", "/api/chat", json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"})
+        if handle is not None and handle.cancelled:
+            raise Cancelled()
+        resp = conn.getresponse()
+        status, raw = resp.status, resp.read()
+    except Cancelled:
+        raise
+    except socket.timeout:
+        raise OllamaError("Ollama의 답을 %d초 동안 받지 못했습니다" % timeout)
+    except (OSError, http.client.HTTPException) as exc:
+        if handle is not None and handle.cancelled:
+            raise Cancelled()
+        raise OllamaError("Ollama에 연결하지 못했습니다 (%s). Ollama가 켜져 있는지 확인해 주세요." % exc)
+    finally:
+        if handle is not None:
+            handle.conn = None
+        try:
+            conn.close()
+        except Exception:
+            pass
+    try:
+        out = json.loads(raw.decode("utf-8") or "{}")
+    except ValueError:
+        raise OllamaError("Ollama의 답을 읽지 못했습니다")
+    if status >= 400:
+        raise OllamaError("Ollama가 요청을 받지 않았습니다 (%d): %s" % (status, out.get("error", "")))
+    return out
+
+
+def chat(model: str, system: str, user: str, max_tokens: int, think: bool = False, handle: Optional[Call] = None,
+         timeout: float = 900.0) -> dict:
+    """글 하나를 묻는다. 늘 같은 답이 나오게 온도 0으로 한다. think: 답하기 전에 생각(풀이)을 쓰게 할지. 기본은 끔(켜면 훨씬 느리다).
 
     반환: {"content", "thinking", "logprobs"(토큰마다 후보와 확률. 못 받으면 빈 목록),
            "in"(입력 토큰), "out"(출력 토큰), "load_s", "in_s", "out_s", "total_s"}
@@ -219,17 +291,18 @@ def chat(model: str, system: str, user: str, max_tokens: int, timeout: float = 9
     body = {"model": model, "stream": False, "keep_alive": "30m", "logprobs": True, "top_logprobs": TOP_LOGPROBS,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {"temperature": 0, "seed": 1, "num_predict": int(max_tokens), "num_ctx": NUM_CTX}}
-    if _think_ok.get(model, True):
-        body["think"] = False
+    if think or _think_ok.get(model, True):
+        body["think"] = bool(think)
     try:
-        out = call("/api/chat", body, timeout)
+        out = _ask(body, timeout, handle)
     except OllamaError as exc:
-        if "think" in body and "think" in str(exc).lower():        # 생각 모드가 없는 모델은 그 항목을 빼고 다시 묻는다
-            _think_ok[model] = False
-            del body["think"]
-            out = call("/api/chat", body, timeout)
-        else:
+        if "think" not in body or "think" not in str(exc).lower():
             raise
+        if think:
+            raise OllamaError("'%s' 은(는) 생각 모드가 없는 모델입니다" % model)
+        _think_ok[model] = False                       # 생각 모드가 없는 모델은 그 항목을 빼고 다시 묻는다
+        del body["think"]
+        out = _ask(body, timeout, handle)
     msg = out.get("message") or {}
     sec = lambda key: float(out.get(key) or 0) / 1e9
     return {"content": str(msg.get("content") or ""), "thinking": str(msg.get("thinking") or ""),

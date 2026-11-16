@@ -44,6 +44,7 @@ button:disabled{opacity:.5;cursor:default}
 .opt label{display:flex;gap:6px;align-items:flex-start;cursor:pointer}
 .opt label.off{color:var(--mute);cursor:default}
 .opt small{color:var(--mute);display:block;font-size:12px;line-height:1.4}
+.opt label.sub2{margin:4px 0 2px 26px}
 .grp{margin:0 0 4px;font-weight:700;font-size:14px}
 input[type=number],input[type=text]{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 input[type=number]{width:84px}
@@ -91,6 +92,7 @@ Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 �
 <div class="card"><h2>5. 돌리기</h2>
 <div class="row"><button id="plan">몇 번 물어야 하는지 세어 보기</button><button id="run" class="main">돌리기</button><button id="stop" disabled>멈추기</button>
 <button id="result">가장 최근 결과 화면 열기</button><button id="folder">결과 폴더 열기</button></div>
+<p class="sub">'멈추기'를 누르면 묻고 있던 글도 기다리지 않고 바로 끊고, 그때까지 받은 답으로 결과 화면을 만듭니다. 받은 답은 보관되어 있어서 다시 '돌리기'를 누르면 이어서 받습니다.</p>
 <div id="planbox"></div><div class="bar" id="bar" style="display:none"><i></i></div><div id="status"></div><div id="donebox"></div></div>
 
 <script>
@@ -116,10 +118,10 @@ function unit(){return S.sel.view==="block"?"block":"line";}
 function saved(){const m=model();const t=m&&m.thresholds&&m.thresholds[S.sel.view];return t&&t.after!=null?t.after:null;}
 function llmlist(){
   const st=S.st,out=[],seen={};
-  const push=(name,note)=>{const k=name.toLowerCase();if(seen[k])return;seen[k]=1;const m=(st.ollama.models||[]).find(x=>x.name.toLowerCase()===k||x.name.toLowerCase()===k+":latest");out.push({name:name,note:note||"",m:m||null});};
-  for(const o of st.offered)push(o[0],o[1]);
-  for(const m of (st.ollama.models||[]))if(!m.cloud)push(m.name,"");
-  for(const n of S.extra)push(n,"");
+  const push=(name,note,think)=>{const k=name.toLowerCase();if(seen[k])return;seen[k]=1;const m=(st.ollama.models||[]).find(x=>x.name.toLowerCase()===k||x.name.toLowerCase()===k+":latest");out.push({name:name,note:note||"",m:m||null,think:m?!!m.thinking:!!think});};
+  for(const o of st.offered)push(o[0],o[1],o[2]);
+  for(const m of (st.ollama.models||[]))if(!m.cloud)push(m.name,"",false);
+  for(const n of S.extra)push(n,"",false);
   return out;
 }
 async function load(){
@@ -150,10 +152,14 @@ function render(){
     radio("thr_mode","saved",S.sel.thr_mode,sv!=null?`지난 학습에서 '예'의 ${pct}%를 찾던 문턱 (${sv.toFixed(2)})`:`지난 학습에서 '예'의 ${pct}%를 찾던 문턱`,sv!=null?"학습용 문서의 정답으로 구해 둔 값":"이 조합의 값이 없습니다. '학습하고 결과 보기'를 한 번 하면 생깁니다",sv==null)+
     radio("thr_mode","half",S.sel.thr_mode,"0.5","예와 아니오 가능성이 반반인 자리")+
     `<label><input type="radio" name="thr_mode" value="custom" ${S.sel.thr_mode==="custom"?"checked":""}><span>직접 정하기 <input type="number" id="thrnum" min="0" max="1" step="0.01" value="${S.sel.threshold.toFixed(2)}"></span></label>`;
+  let hinted=false;
   $("llms").innerHTML=llmlist().map(x=>{
-    const on=S.sel.llms.indexOf(x.name)>=0,m=x.m;
-    const info=m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB${m.thinking?" · 생각 모드는 끄고 씀":""}`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(x.name)}">받기</button>`;
-    return `<label><input type="checkbox" data-llm="${esc(x.name)}" ${on?"checked":""}><span><b>${esc(x.name)}</b>${x.note?" — "+esc(x.note):""}<small>${info}</small></span></label>`;}).join("");
+    const on=S.sel.llms.indexOf(x.name)>=0,m=x.m,tk=x.name+st.think_suffix,ton=S.sel.llms.indexOf(tk)>=0;
+    const info=m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB${m.thinking?" · 생각 모드가 있는 모델 (끄고 씀)":""}`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(x.name)}">받기</button>`;
+    let h=`<div><label><input type="checkbox" data-llm="${esc(x.name)}" ${on?"checked":""}><span><b>${esc(x.name)}</b>${x.note?" — "+esc(x.note):""}<small>${info}</small></span></label>`;
+    if(x.think)h+=`<label class="sub2"><input type="checkbox" data-llm="${esc(tk)}" ${ton?"checked":""}><span>${esc(x.name)} — <b>생각 모드를 켠 것</b>도 함께 돌려 견주기<small>${hinted?"위와 같습니다. 매우 느립니다.":"답하기 전에 풀이를 길게 써서 글 하나에 수백 토큰이 더 듭니다. GPU가 없는 PC에서는 글 하나에 몇 분이 걸릴 수 있습니다. 글 수를 50개로, 안을 한두 개로 줄여서 먼저 돌려 보세요. 너무 오래 걸리면 '멈추기'를 누르면 됩니다."}</small></span></label>`;
+    if(x.think)hinted=true;
+    return h+`</div>`;}).join("");
   $("variants").innerHTML=st.variants.map(v=>`<label><input type="checkbox" data-var="${esc(v.key)}" ${S.sel.variants.indexOf(v.key)>=0?"checked":""}><span><b>${esc(v.key)} ${esc(v.name)}</b> = ${esc(v.parts.join(" + "))}<small>${esc(v.purpose||"")}${v.long?" · 길게 받는 답(느림)":""}</small></span></label>`).join("");
   $("samples").innerHTML=SAMPLES.map(x=>radio("sample",x[0],S.sel.sample,x[1],x[2])).join("");
   $("rej").checked=S.sel.with_rejected;
@@ -182,7 +188,7 @@ function watch(){
     if(!j.running){
       clearInterval(timer);timer=null;S.running=false;lock(false);$("bar").style.display="none";
       if(j.error){say(j.error,true);}
-      else if(j.result){say("");$("donebox").innerHTML=`<p class="done">끝났습니다. <a href="${esc(j.result)}" target="_blank">결과 화면 열기</a></p>`;window.open(j.result,"_blank");}
+      else if(j.result){say("");$("donebox").innerHTML=`<p class="done">${esc(j.text||"끝났습니다.")} <a href="${esc(j.result)}" target="_blank">결과 화면 열기</a></p>`;window.open(j.result,"_blank");}
       else say(j.text||"");
       load().catch(()=>{});
     }
@@ -195,7 +201,7 @@ $("run").onclick=()=>busy(async()=>{
   $("donebox").innerHTML="";say("시작하는 중입니다…");
   await post("/run",body());S.running=true;lock(true);watch();
 });
-$("stop").onclick=async()=>{try{await post("/stop",{});say("지금 묻고 있는 글까지만 받고 멈춥니다…");}catch(e){say(e.message,true);}};
+$("stop").onclick=async()=>{try{$("stop").disabled=true;say("멈추는 중입니다…");await post("/stop",{});}catch(e){say(e.message,true);}};
 $("result").onclick=()=>window.open("/out/verify/index.html","_blank");
 $("folder").onclick=()=>busy(async()=>{await post("/open",{what:"folder"});});
 $("openp").onclick=()=>busy(async()=>{await post("/open",{what:"prompts"});say("메모장에서 고친 뒤 저장하고 '고친 내용 다시 읽기'를 누르세요.");});
@@ -230,7 +236,7 @@ class App:
         self.result = ""
         self.done = 0
         self.total = 0
-        self.stop = threading.Event()
+        self.stop = core.Stop()                     # 멈추기: 묻고 있던 요청도 바로 끊는다
         self._data: dict = {}                       # (분류기, 크기, 파일들의 지문) → 모아 둔 글과 점수
         self._seen = 0
         self.first = ollama.ensure_running(self.log)
@@ -278,7 +284,7 @@ class App:
         else:
             note = "시험용 문서 %d개 · 정답이 붙은 줄 %d개 ('예' %d, '아니오' %d)" % (len(test), yes + no, yes, no)
         return {"ok": True, "ollama": self._ollama(), "choices": mcore.choices(cfg), "variants": variants, "prompt_error": prompt_error,
-                "offered": [list(x) for x in core.OFFERED_LLMS], "docs_note": note, "target": float(cfg.target),
+                "offered": [list(x) for x in core.OFFERED_LLMS], "think_suffix": core.THINK_SUFFIX, "docs_note": note, "target": float(cfg.target),
                 "defaults": {"classifier": core.DEFAULT_CLASSIFIER, "llms": list(core.DEFAULT_LLMS), "sample": core.DEFAULT_SAMPLE},
                 "run": {"running": self.running}}
 
@@ -294,9 +300,9 @@ class App:
         mode = str(body.get("thr_mode") or "test90")
         if mode not in ("test90", "saved", "half", "custom"):
             raise ValueError("문턱을 정하는 방법을 알 수 없습니다")
-        llms = [str(n).strip() for n in (body.get("llms") or []) if str(n).strip()][:8]
+        llms = [str(n).strip() for n in (body.get("llms") or []) if str(n).strip()][:12]
         for n in llms:
-            if ollama.is_cloud_name(n):
+            if ollama.is_cloud_name(core.split_entry(n)[0]):
                 raise ValueError("'%s' 은(는) 클라우드 모델이라 쓰지 않습니다. 자료가 이 PC 밖으로 나가기 때문입니다." % n)
         try:
             sample = max(0, int(body.get("sample") or 0))
@@ -331,16 +337,13 @@ class App:
         with self.lock:
             prep = core.prepare(self.env, setup, self.scorer, self.log, self._load(setup))
             answers = core.Answers(self.env.out / "cache" / "answers.jsonl")
-            listed, llms, missing = [], [], []
+            listed = []
             try:
                 listed = ollama.models()
             except ollama.OllamaError:
                 pass
-            for n in setup.llms:
-                m = ollama.find_model(n, listed)
-                if m is None:
-                    missing.append(n)
-                llms.append({"name": m["name"] if m else n, "digest": m["digest"] if m else ""})
+            llms = core.llm_entries(setup.llms, listed, strict=False)
+            missing = sorted({m["name"] for m in llms if not m["digest"]})
             todo = core.todo_counts(prep, llms, answers)
             total = len(prep["chosen"]) * len(prep["plans"]) * len(llms)
             est = self._estimate(prep, llms, answers, todo)
@@ -355,11 +358,10 @@ class App:
         for m in llms:
             for plan in prep["plans"]:
                 v = plan["variant"]
-                n = todo.get("%s|%s" % (m["name"], v.key), 0)
+                n = todo.get("%s|%s" % (m["id"], v.key), 0)
                 if not n:
                     continue
-                secs = [r["sec"] for u in plan["users"]
-                        for r in [answers.get(core.answer_key(m["name"], m["digest"], plan["system"], u, v.max_tokens))] if r]
+                secs = [r["sec"] for u in plan["users"] for r in [answers.get(core._key(m, plan, u))] if r]
                 if len(secs) < 3:
                     known = False
                     continue
@@ -399,6 +401,9 @@ class App:
             self.running = False
 
     def halt(self) -> dict:
+        """멈추기. 지금 묻고 있는 글도 기다리지 않고 끊는다. 그때까지 받은 답은 보관되어 있고, 그것으로 결과 화면을 만든다."""
+        if self.running:
+            self.status = "멈추는 중입니다…"
         self.stop.set()
         return {"ok": True}
 
@@ -412,6 +417,7 @@ class App:
             if self.running:
                 raise ValueError("지금 다른 일을 하는 중입니다. 끝난 뒤에 해 주세요.")
             self.running, self.error, self.result, self.done, self.total = True, "", "", 0, 0
+            self.stop.clear()
 
         def work() -> None:
             try:
@@ -425,8 +431,11 @@ class App:
                     if text.split(":")[0] != last["text"]:
                         last["text"] = text.split(":")[0]
                         print(text, flush=True)
-                ollama.pull(name, show)
+                ollama.pull(name, show, self.stop)
                 self.status = "%s 을(를) 받았습니다." % name
+                print(self.status, flush=True)
+            except ollama.Cancelled:
+                self.status = "받기를 멈췄습니다. 받던 부분은 남아 있어서, 다시 '받기'를 누르면 이어서 받습니다."
                 print(self.status, flush=True)
             except ollama.OllamaError as exc:
                 self.error = str(exc)
