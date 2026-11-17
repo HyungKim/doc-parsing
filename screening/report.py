@@ -25,6 +25,7 @@ code{background:var(--card);border:1px solid var(--line);border-radius:4px;paddi
 table.sum td.best{font-weight:700;color:var(--tt-ink)}
 table.sum td.g{background:rgba(31,95,191,.06)}
 table.sum td.up{color:var(--tt-ink);font-weight:700}
+table.sum.proc td,table.sum.proc th{white-space:nowrap}table.sum.proc small{color:var(--mute)}
 table.sum td.down{color:var(--rm-ink);font-weight:700}
 table.sum td.flat{color:var(--mute)}
 table.sum th.grp{text-align:center}
@@ -458,6 +459,7 @@ def _classifier_section(res: Result, runs: List[ModelRun], target: str) -> str:
     p.append("<p class=\"legend\">선형 SVM의 값은 0~1 점수가 아니라 경계에서 떨어진 정도라서(0이 경계), 문턱값의 단위가 로지스틱 회귀와 다릅니다. "
              "순위 정확도와 통과 비율은 단위와 상관없이 견줄 수 있습니다. 학습시킨 선형 SVM은 <code>모델__단위__svm.json</code>으로 함께 저장됩니다.</p>")
     p.append(_settings_table(runs))
+    p.append(_process_table(runs))
     return "".join(p)
 
 
@@ -544,6 +546,78 @@ def _settings_table(runs: List[ModelRun]) -> str:
             "화면의 '학습 후' 점수에 쓰이는 것은 로지스틱 회귀입니다.</p>"
             "<div class=\"wrap\"><table class=\"sum set\"><tr><th>설정</th><th>로지스틱 회귀</th><th>선형 SVM</th><th>뜻</th><th>이 값을 고른 이유</th><th>다른 선택지</th></tr>%s</table></div></details>" % (
                 esc(any_info.get("sklearn", "")), body))
+
+
+def _curve_svg(curve: list, width: int = 220, height: int = 64) -> str:
+    """되풀이할수록 목적 함수 값이 줄어드는 모양(작은 꺾은선). curve: [[되풀이 횟수, 값], …]"""
+    pts = [(float(k), float(v)) for k, v in curve or []]
+    if len(pts) < 2:
+        return ""
+    x_max = max(k for k, _ in pts) or 1.0
+    lo, hi = min(v for _, v in pts), max(v for _, v in pts)
+    span = (hi - lo) or 1.0
+    left, right, top, bottom = 4.0, 6.0, 6.0, 14.0
+    sx = lambda k: left + (width - left - right) * k / x_max
+    sy = lambda v: top + (height - top - bottom) * (hi - v) / span
+    line = " ".join("%.1f,%.1f" % (sx(k), sy(v)) for k, v in pts)
+    dots = "".join("<circle cx=\"%.1f\" cy=\"%.1f\" r=\"2.2\" fill=\"var(--acc)\"><title>%d번째: %.4f</title></circle>" % (sx(k), sy(v), int(k), v)
+                   for k, v in pts)
+    return ("<svg viewBox=\"0 0 %d %d\" width=\"%d\" height=\"%d\" role=\"img\" aria-label=\"되풀이할수록 줄어드는 목적 함수 값\">"
+            "<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" y2=\"%.1f\" stroke=\"var(--line)\"/>"
+            "<polyline points=\"%s\" fill=\"none\" stroke=\"var(--acc)\" stroke-width=\"1.6\"/>%s"
+            "<text x=\"%.1f\" y=\"%d\" font-size=\"9\" fill=\"var(--mute)\">0번</text>"
+            "<text x=\"%.1f\" y=\"%d\" font-size=\"9\" fill=\"var(--mute)\" text-anchor=\"end\">%d번</text></svg>" % (
+                width, height, width, height, left, height - bottom + 1, width - right, height - bottom + 1, line, dots,
+                left, height - 2, width - right, height - 2, int(x_max)))
+
+
+def _process_table(runs: List[ModelRun]) -> str:
+    """학습 과정: 가중치를 찾아가는 동안 정해지고 나타난 값. 신경망 학습의 epoch·loss에 견줄 수 있는 것."""
+    rows = []
+    notes = []
+    for r in runs:
+        for u, name in (("block", "덩어리"), ("line", "줄")):
+            info = r.train_info[u] or {}
+            pr = info.get("process")
+            if not pr:
+                if info.get("process_note"):
+                    notes.append("%s · %s: 학습 과정을 기록하지 못했습니다 (%s)" % (esc(r.spec["label"]), name, esc(info["process_note"])))
+                continue
+            folds = ", ".join("-" if v is None else str(v) for v in pr.get("fold_iters") or [])
+            stop = "스스로 멈춤" if pr["converged"] else "<b style=\"color:var(--rm-ink)\">한도에 닿음</b>"
+            svm = pr.get("svm") or {}
+            svm_text = "-" if not svm else "%s번 (한도 %s번%s)" % (svm.get("iters"), svm.get("limit"), "" if svm.get("converged") else ", 한도에 닿았거나 덜 수렴함")
+            rows.append(
+                "<tr><td><b>%s</b></td><td>%s</td><td class=\"n\">%d개<br><small>예 %d · 아니오 %d</small></td>"
+                "<td class=\"n\">예 %.2f<br>아니오 %.2f</td>"
+                "<td class=\"n\"><b>%s번</b><br><small>묶음마다 %s</small></td><td>%s<br><small>한도 %d번 · 기준 %s</small></td>"
+                "<td class=\"n\">%.4f → <b>%.4f</b><br><small>끝 값 = 평균 벌점 %.4f + 규제 몫 %.4f</small></td><td>%s</td>"
+                "<td class=\"n\">%s</td><td class=\"n\">%.2f<br><small>기준값 %+.3f</small></td><td class=\"n\">%.2f초<br><small>학습 %d번</small></td><td class=\"n\">%s</td></tr>" % (
+                    esc(r.spec["label"]), name, pr["n"], pr["yes"], pr["no"], pr["weight_yes"], pr["weight_no"],
+                    pr["iters"], folds or "-", stop, pr["limit"], pr["tol"],
+                    pr["start"]["objective"], pr["end"]["objective"], pr["end"]["loss"], pr["end"]["penalty"],
+                    _curve_svg(pr.get("curve")) or "-", _pct(pr.get("train_hit")), pr["norm"], pr["intercept"], pr["seconds"], pr.get("fits", 0), svm_text))
+            if pr.get("curve_note"):
+                notes.append("%s · %s: %s" % (esc(r.spec["label"]), name, esc(pr["curve_note"])))
+    if not rows:
+        return ""
+    return ("<details class=\"box\" style=\"max-width:none\" open><summary><b>학습 과정</b> · 가중치를 찾아가는 동안 실제로 나타난 값 "
+            "(신경망 학습의 epoch · batch · loss에 해당하는 것)</summary>"
+            "<p class=\"legend\">분류기(로지스틱 회귀)의 가중치는 '목적 함수 값'을 가장 작게 만드는 값으로 정해집니다. "
+            "<b>목적 함수 값 = 평균 벌점 + 규제 몫</b>입니다. 평균 벌점은 정답에 준 확률이 낮을수록 커지는 값(로그 손실)에 정답별 무게를 곱해 평균한 것이고, "
+            "규제 몫은 가중치가 커진 만큼의 벌점(½‖w‖² ÷ (C × 무게의 합))입니다. 가중치가 모두 0인 처음에는 어느 글에나 0.5를 주므로 0.6931(= log 2)에서 시작합니다.</p>"
+            "<p class=\"legend\"><b>되풀이</b> 한 번은 학습에 쓴 정답 <b>전체</b>로 가중치를 한 번 고치는 일입니다(신경망으로 치면 1 epoch, 묶음은 나누지 않음). "
+            "몇 번 할지 미리 정하지 않고, 더 줄어들지 않으면(기울기가 기준보다 작아지면) 스스로 멈춥니다. 한도에 닿았다면 끝까지 줄이지 못한 것입니다. "
+            "걸음의 크기(학습률)는 계산 방법(lbfgs)이 매번 스스로 정하고, 답이 하나뿐인 문제라 다시 학습해도 같은 가중치가 나옵니다.</p>"
+            "<div class=\"wrap\"><table class=\"sum proc\"><tr><th>모델</th><th>넣는 크기</th><th>학습에 쓴 정답</th><th>정답별 무게</th><th>되풀이 횟수</th>"
+            "<th>멈춘 까닭</th><th>목적 함수 값 (처음 → 끝)</th><th>줄어드는 모양</th><th>학습한 정답을 다시 맞힌 비율</th><th>가중치의 크기 ‖w‖</th><th>걸린 시간</th>"
+            "<th>선형 SVM의 되풀이</th></tr>%s</table></div>"
+            "<p class=\"legend\">· <b>정답별 무게</b>는 전체 수 ÷ (2 × 그 정답의 수)입니다(class_weight=balanced). '예' 하나를 틀린 벌점에 이 무게가 곱해집니다.<br>"
+            "· <b>되풀이 횟수</b>의 큰 숫자는 저장하는 분류기(모든 학습용 정답으로 학습)의 것이고, '묶음마다'는 나눠서 시험할 때 묶음 하나를 빼고 학습한 것들의 횟수입니다.<br>"
+            "· <b>줄어드는 모양</b>의 점에 마우스를 올리면 몇 번째 되풀이의 값인지 나옵니다. 되풀이 한도를 그 횟수로 줄여 다시 학습시킨 값이라, 끝까지 간 학습의 그 자리와 같습니다.<br>"
+            "· <b>학습한 정답을 다시 맞힌 비율</b>은 이미 본 정답을 0.5 문턱으로 다시 맞힌 비율이라 높게 나옵니다. 성능은 위 표의 수치(그 글을 빼고 학습시킨 분류기의 점수)로 봐야 합니다.<br>"
+            "· 이 표는 기록만 합니다. 학습 결과와 점수는 이 표가 없던 때와 같습니다. 같은 값이 실행 창과 <code>scores.json</code>의 <code>training_process</code>에도 남습니다.%s</p></details>" % (
+                "".join(rows), "".join("<br>· " + n for n in notes)))
 
 
 def _gain_cells(g: Optional[dict], words: Optional[tuple] = None) -> str:

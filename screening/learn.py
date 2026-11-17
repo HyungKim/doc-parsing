@@ -20,6 +20,9 @@ from .items import BlockItem
 
 MIN_EACH = 4          # 분류기를 학습시키려면 '예'와 '아니오'가 각각 이만큼은 있어야 한다
 C_VALUE = 4.0         # 가중치가 커지는 것을 누르는 세기(클수록 덜 누름). 로지스틱 회귀와 선형 SVM에 같은 값을 쓴다
+MAX_ITER = 2000       # 로지스틱 회귀가 가중치를 고쳐 가는 되풀이의 한도. 대개 수십 번 안에 스스로 멈춘다
+CURVE_POINTS = 10     # '학습 과정'에 남기는, 되풀이마다 줄어드는 값의 점 수
+CURVE_SECONDS = 3.0   # 학습 한 번이 이보다 오래 걸리면 줄어드는 과정은 다시 계산하지 않는다(시간을 아끼려고)
 
 
 # ---------------------------------------------------------------- 정답 파일
@@ -173,10 +176,12 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     g = np.array([groups.get(k, k) for k in keys])
     folds = min(5, n_yes, n_no)
 
-    def fit(xs: np.ndarray, ys: np.ndarray):
-        return LogisticRegression(C=C_VALUE, class_weight="balanced", max_iter=2000).fit(xs, ys)
+    def fit(xs: np.ndarray, ys: np.ndarray, max_iter: int = MAX_ITER):
+        return LogisticRegression(C=C_VALUE, class_weight="balanced", max_iter=max_iter).fit(xs, ys)
 
     oof = np.full(len(keys), np.nan)
+    fold_iters: List[Optional[int]] = []           # 묶음마다 몇 번 되풀이하고 멈췄는가 ('학습 과정'에 남긴다)
+    t_all = time.time()
     splits: list = []
     splitters = []
     if len(set(g)) >= folds:
@@ -185,12 +190,15 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     done, grouped = False, False
     for which, make in enumerate(splitters):       # 같은 쪽끼리 묶어 나누기가 안 되면 묶지 않고 나눈다
         oof[:] = np.nan
+        fold_iters = []
         try:
             splits = list(make())
             for tr, te in splits:
                 if len(set(y[tr])) < 2:
                     raise ValueError("한쪽 정답만 있는 묶음")
-                oof[te] = fit(X[tr], y[tr]).predict_proba(X[te])[:, 1]
+                part = fit(X[tr], y[tr])
+                fold_iters.append(_iters(part))
+                oof[te] = part.predict_proba(X[te])[:, 1]
         except ValueError:
             continue
         if not np.isnan(oof).any():
@@ -199,7 +207,10 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     if not done:
         return None, "정답이 한쪽으로 몰려 있어 나눠서 시험할 수 없습니다"
 
+    t_final = time.time()
     final = fit(X, y)
+    final_seconds = time.time() - t_final
+    seconds = time.time() - t_all
     scores: Dict[str, float] = {}
     rest = [k for k in vectors if k not in labels]
     if rest:
@@ -218,7 +229,109 @@ def train(vectors: Dict[str, np.ndarray], labels: Dict[str, int], groups: Dict[s
     # 실제로 적용된 설정값(라이브러리가 알려 주는 그대로). 화면의 '분류기 설정'에 쓴다
     info = {"sklearn": sklearn.__version__, "folds": folds, "grouped": grouped, "yes": n_yes, "no": n_no, "min_each": MIN_EACH,
             "logreg": _plain(final.get_params()), "svm": svm.get("params")}
+    try:                                           # 학습 과정의 기록. 보여 주기용이라, 실패해도 학습 결과는 그대로 낸다
+        info["process"] = _process(X, y, final, fold_iters, final_seconds, seconds, fit)
+        if svm.get("iters") is not None:
+            info["process"]["svm"] = {"iters": svm["iters"], "limit": svm.get("limit"),
+                                      "converged": svm["iters"] < (svm.get("limit") or 0) and not svm.get("note")}
+    except Exception as exc:
+        info["process"] = None
+        info["process_note"] = "%s: %s" % (type(exc).__name__, str(exc)[:120])
     return {"scores": scores, "model": model, "folds": folds, "svm": svm, "info": info}, ""
+
+
+def _iters(clf) -> Optional[int]:
+    """학습이 멈출 때까지 되풀이한 횟수(라이브러리가 알려 주는 값)."""
+    got = getattr(clf, "n_iter_", None)
+    if got is None:
+        return None
+    try:
+        return int(np.max(got))
+    except (TypeError, ValueError):
+        return None
+
+
+def class_weights(y: np.ndarray) -> Tuple[float, float]:
+    """class_weight="balanced"가 정답마다 주는 무게: 전체 수 ÷ (2 × 그 정답의 수). 반환: ('아니오'의 무게, '예'의 무게)"""
+    n, n_yes = len(y), int((y == 1).sum())
+    n_no = n - n_yes
+    return n / (2.0 * max(n_no, 1)), n / (2.0 * max(n_yes, 1))
+
+
+def objective(X: np.ndarray, y: np.ndarray, coef: np.ndarray, intercept: float, c: float = C_VALUE) -> dict:
+    """로지스틱 회귀가 줄이려는 값을 글 하나당으로 나타낸 것.
+
+        목적 함수 값 = 평균 벌점 + 규제 몫
+        평균 벌점 = Σ 무게 × -log(정답에 준 확률) ÷ Σ 무게          (무게를 반영한 로그 손실)
+        규제 몫   = ½‖w‖² ÷ (C × Σ 무게)                            (가중치가 커진 만큼의 벌점. 절편은 넣지 않는다)
+    라이브러리가 줄이는 값(½‖w‖² + C × Σ 무게 × 벌점)을 C × Σ 무게로 나눈 것이라, 가장 작아지는 자리는 같다.
+    가중치가 모두 0일 때는 어느 글에나 확률 0.5를 주므로 평균 벌점이 log 2 = 0.693이다.
+    """
+    xs, w = np.asarray(X, dtype=np.float64), np.asarray(coef, dtype=np.float64)
+    w_no, w_yes = class_weights(y)
+    weights = np.where(y == 1, w_yes, w_no)
+    z = xs @ w + float(intercept)
+    sign = np.where(y == 1, 1.0, -1.0)
+    with np.errstate(all="ignore"):
+        loss = float((weights * np.logaddexp(0.0, -sign * z)).sum() / weights.sum())
+    penalty = float(0.5 * (w @ w) / (c * weights.sum()))
+    return {"loss": loss, "penalty": penalty, "objective": loss + penalty}
+
+
+def _curve_steps(n: int, most: int = CURVE_POINTS) -> List[int]:
+    """1번째부터 n번째 되풀이 가운데, 줄어드는 과정을 보여 줄 자리(앞쪽은 촘촘하게, 뒤쪽은 성기게). n번째는 넣지 않는다."""
+    if n <= 1:
+        return []
+    if n - 1 <= most - 1:
+        return list(range(1, n))
+    steps, k = [], 1.0
+    ratio = (n - 1) ** (1.0 / max(most - 2, 1))
+    while len(steps) < most - 1 and int(round(k)) < n:
+        v = int(round(k))
+        if not steps or v > steps[-1]:
+            steps.append(v)
+        k = max(k * ratio, k + 1)
+    return steps
+
+
+def _process(X: np.ndarray, y: np.ndarray, final, fold_iters: List[Optional[int]], final_seconds: float, seconds: float, fit) -> dict:
+    """학습 과정에서 정해지고 나타난 값. 신경망 학습의 epoch·loss에 견줄 수 있는 것을 모은다(학습 결과는 바꾸지 않는다).
+
+    줄어드는 과정(curve)은 '되풀이 한도를 k번으로 줄여 다시 학습시킨 것'의 값이다. 이 계산법(lbfgs)은 늘 같은 길을 가므로,
+    k번에서 끊은 결과가 곧 끝까지 간 학습의 k번째 자리다.
+    """
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
+
+    n, dim = int(X.shape[0]), int(X.shape[1])
+    w_no, w_yes = class_weights(y)
+    iters, limit = _iters(final), int(final.max_iter)
+    coef, intercept = final.coef_[0], float(final.intercept_[0])
+    start = objective(X, y, np.zeros(dim), 0.0)
+    end = objective(X, y, coef, intercept)
+    curve = [[0, round(start["objective"], 6)]]
+    curve_note = ""
+    if iters and final_seconds <= CURVE_SECONDS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            for k in _curve_steps(iters):
+                part = fit(X, y, k)
+                curve.append([k, round(objective(X, y, part.coef_[0], float(part.intercept_[0]))["objective"], 6)])
+    elif iters:
+        curve_note = "학습 한 번이 %.1f초 걸려, 줄어드는 과정은 처음과 끝만 적었습니다" % final_seconds
+    if iters:
+        curve.append([iters, round(end["objective"], 6)])
+    with np.errstate(all="ignore"):
+        hit = float(((1.0 / (1.0 + np.exp(-(np.asarray(X, dtype=np.float64) @ coef + intercept))) >= 0.5) == (y == 1)).mean())
+    return {"n": n, "dim": dim, "yes": int((y == 1).sum()), "no": int((y == 0).sum()),
+            "weight_yes": round(w_yes, 4), "weight_no": round(w_no, 4),
+            "iters": iters, "fold_iters": list(fold_iters), "limit": limit, "tol": float(final.tol),
+            "converged": bool(iters is not None and iters < limit),
+            "start": {k: round(v, 6) for k, v in start.items()}, "end": {k: round(v, 6) for k, v in end.items()},
+            "curve": curve, "curve_note": curve_note,
+            "norm": round(float(np.linalg.norm(coef)), 4), "intercept": round(intercept, 5), "train_hit": round(hit, 4),
+            "seconds": round(float(seconds), 4), "final_seconds": round(float(final_seconds), 4), "fits": len(fold_iters) + 1}
 
 
 def _plain(params: dict) -> dict:
@@ -247,5 +360,5 @@ def _train_svm(X: np.ndarray, y: np.ndarray, keys: List[str], splits: list, vect
             scores.update({k: float(v) for k, v in zip(rest, final.decision_function(np.stack([vectors[k] for k in rest])))})
         scores.update({k: float(v) for k, v in zip(keys, oof)})
     note = "계산이 끝까지 수렴하지 않아 결과가 조금 덜 정확할 수 있습니다" if any(issubclass(w.category, ConvergenceWarning) for w in caught) else ""
-    return {"scores": scores, "note": note, "params": _plain(final.get_params()),
+    return {"scores": scores, "note": note, "params": _plain(final.get_params()), "iters": _iters(final), "limit": int(final.max_iter),
             "model": {"coef": [round(float(v), 6) for v in final.coef_[0]], "intercept": float(final.intercept_[0])}}

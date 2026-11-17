@@ -286,6 +286,12 @@ def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: P
                         r.after[unit] = trained["scores"]
                         save_classifier(labels_file.parent / "classifiers" / ("%s__%s.json" % (spec["key"], unit)), spec, unit, trained)
                         r.train_info[unit] = trained.get("info")
+                        proc = (trained.get("info") or {}).get("process")
+                        if proc:                   # 학습 과정에서 나타난 값을 실행 창에도 알린다 (화면의 '학습 과정'과 같은 값)
+                            log("  학습(%s): 정답 %d개(예 %d · 아니오 %d) · 되풀이 %s번에 %s(한도 %d번) · 목적 함수 값 %.4f → %.4f · %.2f초" % (
+                                "덩어리" if unit == "block" else "줄", proc["n"], proc["yes"], proc["no"], proc["iters"],
+                                "멈춤" if proc["converged"] else "한도에 닿음", proc["limit"], proc["start"]["objective"], proc["end"]["objective"],
+                                proc["seconds"]))
                         svm = trained.get("svm") or {}
                         r.svm[unit], r.svm_note[unit] = svm.get("scores"), svm.get("note", "")
                         if svm.get("model"):
@@ -599,7 +605,10 @@ def write_scores(res: Result, path: Path) -> None:
             blocks.append(block)
         docs.append({"file": d.name, "kind": d.kind, "test": d.name in res.test_names, "blocks": blocks})
     settings = next(({u: r.train_info[u] for u in ("block", "line")} for r in ok if r.train_info["block"] or r.train_info["line"]), None)
+    process = {r.key: {u: (r.train_info[u] or {}).get("process") for u in ("block", "line")} for r in ok
+               if any((r.train_info[u] or {}).get("process") for u in ("block", "line"))}
     data = {"made": time.strftime("%Y-%m-%d %H:%M:%S"), "title_weight": res.title_weight, "classifier_settings": settings,
+            "training_process": process,
             "test_docs": list(res.test_names),
             "sentences": [{"name": s.name, "positive": s.positive, "text": s.text} for s in res.sentences],
             "models": [{"key": r.key, "label": r.spec["label"], "kind": r.spec["kind"], "ok": r.ok, "error": r.error,
