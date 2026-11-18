@@ -89,7 +89,9 @@ Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 �
 
 <div class="card"><h2>4. 얼마나 돌릴지</h2>
 <div class="grp">LLM에 넣을 글 수</div><div class="opt" id="samples"></div>
-<div class="opt"><label><input type="checkbox" id="rej"><span>분류기가 떨어뜨린 글도 같은 수만큼 넣어 보기<small>분류기가 놓친 '예'를 LLM이 알아보는지 볼 수 있습니다. 시간이 두 배쯤 듭니다.</small></span></label></div></div>
+<div class="opt"><label><input type="checkbox" id="rej"><span>분류기가 떨어뜨린 글도 같은 수만큼 넣어 보기<small>분류기가 놓친 '예'를 LLM이 알아보는지 볼 수 있습니다. 시간이 두 배쯤 듭니다.</small></span></label></div>
+<div class="grp">걸린 시간 재기</div>
+<div class="opt"><label><input type="checkbox" id="fresh"><span>분류기에 걸리는 시간도 재기 (보관해 둔 계산을 쓰지 않고 점수를 다시 계산)<small>분류기 점수는 한 번 계산하면 보관해 두고 다시 쓰기 때문에, 그대로 돌리면 결과 화면의 '단계마다 걸린 시간'에서 분류기 시간이 거의 0으로 나옵니다. 체크하면 문서의 글 전체에 점수를 다시 매겨 실제 시간을 잽니다(점수와 결과는 같고, 그만큼 시간이 더 듭니다). LLM의 시간은 체크하지 않아도 늘 나옵니다.</small></span></label></div></div>
 
 <div class="card"><h2>5. 돌리기</h2>
 <div class="row"><button id="plan">몇 번 물어야 하는지 세어 보기</button><button id="run" class="main">돌리기</button><button id="stop" disabled>멈추기</button>
@@ -164,7 +166,7 @@ function render(){
     return h+`</div>`;}).join("");
   $("variants").innerHTML=st.variants.map(v=>`<label><input type="checkbox" data-var="${esc(v.key)}" ${S.sel.variants.indexOf(v.key)>=0?"checked":""}><span><b>${esc(v.key)} ${esc(v.name)}</b> = ${esc(v.parts.join(" + "))}<small>${esc(v.purpose||"")}${v.long?" · 길게 받는 답(느림)":""}</small></span></label>`).join("");
   $("samples").innerHTML=SAMPLES.map(x=>radio("sample",x[0],S.sel.sample,x[1],x[2])).join("");
-  $("rej").checked=S.sel.with_rejected;
+  $("rej").checked=S.sel.with_rejected;$("fresh").checked=!!S.sel.fresh;
 }
 function body(){return Object.assign({},S.sel);}
 function planText(j){
@@ -219,6 +221,7 @@ document.addEventListener("change",e=>{const t=e.target;
   if(t.name==="sample"){S.sel.sample=parseInt(t.value,10);}
   if(t.id==="thrnum"){const v=parseFloat(t.value);if(!isNaN(v)){S.sel.thr_mode="custom";S.sel.threshold=Math.min(1,Math.max(0,v));render();}}
   if(t.id==="rej")S.sel.with_rejected=t.checked;
+  if(t.id==="fresh")S.sel.fresh=t.checked;
   if(t.dataset&&t.dataset.llm){const n=t.dataset.llm,i=S.sel.llms.indexOf(n);if(t.checked&&i<0)S.sel.llms.push(n);if(!t.checked&&i>=0)S.sel.llms.splice(i,1);}
   if(t.dataset&&t.dataset.var){const n=t.dataset.var,i=S.sel.variants.indexOf(n);if(t.checked&&i<0)S.sel.variants.push(n);if(!t.checked&&i>=0)S.sel.variants.splice(i,1);}
 });
@@ -313,7 +316,7 @@ class App:
         return core.Setup(classifier=str(body.get("classifier") or core.DEFAULT_CLASSIFIER), view=view, thr_mode=mode,
                           threshold=mcore.safe_threshold(body.get("threshold")) if mode == "custom" else None, llms=llms,
                           variants=[str(k) for k in (body.get("variants") or [])][:40], sample=sample,
-                          with_rejected=bool(body.get("with_rejected")))
+                          with_rejected=bool(body.get("with_rejected")), fresh=bool(body.get("fresh")))
 
     def _signature(self, setup: core.Setup) -> tuple:
         cfg = self.env.cfg
@@ -321,19 +324,20 @@ class App:
         files = [Path(cfg.labels), Path(cfg.test_docs), mcore.classifier_file(cfg.labels, setup.classifier, unit)]
         units = sorted(Path(cfg.out_dir).glob("*.units.json"))
         stamp = lambda p: p.stat().st_mtime_ns if p.exists() else 0
-        return (setup.classifier, setup.view, float(cfg.title_weight or 0.0), tuple(stamp(p) for p in files),
+        return (setup.classifier, setup.view, bool(setup.fresh), float(cfg.title_weight or 0.0), tuple(stamp(p) for p in files),
                 len(units), max([stamp(p) for p in units] or [0]))
 
     def _load(self, setup: core.Setup) -> dict:
         """글과 분류기 점수. 정답·분류기·문서가 바뀌지 않았으면 모아 둔 것을 다시 쓴다(다시 학습했으면 새로 모은다)."""
         sig = self._signature(setup)
         if sig not in self._data:
-            self._data = {sig: core.load_data(self.env, self.scorer, setup.classifier, setup.view, self.log)}
+            self._data = {sig: core.load_data(self.env, self.scorer, setup.classifier, setup.view, self.log, bool(setup.fresh))}
         return self._data[sig]
 
     # ------------------------------------------------------------ 세어 보기, 돌리기
     def plan(self, body: dict) -> dict:
         setup = self._setup(body)
+        setup.fresh = False                         # 세어 보기에서는 시간을 재지 않는다(보관해 둔 계산을 그대로 쓴다)
         if self.running:
             raise ValueError("지금 돌리는 중입니다. 끝난 뒤에 해 주세요.")
         with self.lock:

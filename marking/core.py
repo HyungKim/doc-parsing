@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -39,6 +40,7 @@ class Extracted:
     line_rows: Dict[str, list] = field(default_factory=dict)     # 줄 id → 그 줄을 이룬 원래 줄들의 자리. 모르면 없음
     slide_numbers: List[int] = field(default_factory=list)       # PPTX: 쪽 번호(1부터) → 파일 안의 실제 슬라이드 번호
     titles: Dict[int, str] = field(default_factory=dict)         # 쪽 번호 → 제목
+    seconds: float = 0.0                                         # 글을 뽑는 데 걸린 시간(초)
 
     @property
     def counts(self) -> dict:
@@ -52,6 +54,7 @@ def extract(path: Path) -> Extracted:
     from docparse.pipeline import apply_rules
 
     path = Path(path)
+    t0 = time.perf_counter()
     kind = path.suffix.lower().lstrip(".")
     if kind == "pdf":
         from docparse import pdf_plumber
@@ -85,6 +88,7 @@ def extract(path: Path) -> Extracted:
                 k += 1
                 if rows[j]:
                     ex.line_rows["%s-l%d" % (bid, k)] = [tuple(r) for r in rows[j]]
+    ex.seconds = time.perf_counter() - t0
     return ex
 
 
@@ -161,6 +165,25 @@ class _TwoStores:
         self.own.save()
 
 
+class _Memory:
+    """파일에 남기지 않는 저장소. 보관해 둔 계산을 쓰지 않고 처음부터 다시 계산할 때(걸린 시간을 잴 때) 쓴다."""
+
+    def __init__(self) -> None:
+        self.rows: Dict[str, object] = {}
+
+    def has(self, key: str) -> bool:
+        return key in self.rows
+
+    def get(self, key: str):
+        return self.rows[key]
+
+    def put(self, key: str, row) -> None:
+        self.rows.setdefault(key, row)
+
+    def save(self) -> None:
+        pass
+
+
 class Scorer:
     """고른 모델·크기·판단 방법으로 문서에 점수를 매긴다. 불러온 저장소는 들고 있다가 다시 쓴다."""
 
@@ -178,12 +201,16 @@ class Scorer:
                                                    models.Store(out / "screen" / "cache" / (spec["key"] + ".npz"), meta))
         return self._stores[spec["key"]]
 
-    def score(self, ex: Extracted, model_key: str, view: str, stage: str, log: Callable[[str], None]) -> dict:
-        """반환: {"block": {덩어리 id: 점수}, "line": {줄 id: 점수}, "new": 새로 계산한 글 수, "seconds": 초, "classifier": 분류기 정보}
+    def score(self, ex: Extracted, model_key: str, view: str, stage: str, log: Callable[[str], None], fresh: bool = False) -> dict:
+        """반환: {"block": {덩어리 id: 점수}, "line": {줄 id: 점수}, "new": 새로 계산한 글 수, "seconds": 초, "classifier": 분류기 정보,
+                 "wall": 이 단계 전체에 걸린 초(모델을 불러오는 시간 포함), "items": 점수를 매긴 글 수, "uniq": 그 가운데 서로 다른 글 수,
+                 "new_items": 그 가운데 이번에 새로 계산한 글 수, "fresh": 보관해 둔 계산을 쓰지 않았는가}
 
         view가 block이면 덩어리 점수만, agg면 줄 점수와 그 최댓값인 덩어리 점수, line이면 줄 점수만 있다.
         쪽 제목 반영이 켜져 있으면(설정 파일의 title_weight) 걸러내기와 같은 식으로 제목 점수를 섞는다.
+        fresh: 보관해 둔 임베딩을 쓰지 않고 모두 다시 계산한다(걸린 시간을 잴 때). 이때 계산한 것은 파일에 남기지 않는다.
         """
+        t_start = time.perf_counter()
         import numpy as np
         from screening import models
         from screening.sentences import load_sentences
@@ -196,7 +223,8 @@ class Scorer:
         if spec is None or spec["kind"] != "embed":
             raise ValueError("고를 수 없는 모델입니다: %s" % model_key)
         if ex.doc is None:
-            return {"block": {}, "line": {}, "new": 0, "seconds": 0.0, "classifier": None}
+            return {"block": {}, "line": {}, "new": 0, "seconds": 0.0, "classifier": None, "wall": 0.0, "items": 0, "uniq": 0,
+                    "new_items": 0, "fresh": bool(fresh)}
         unit = "block" if view == "block" else "line"
         clf = None
         if stage == "after":
@@ -205,9 +233,10 @@ class Scorer:
                 raise ValueError("%s 모델의 %s 분류기가 아직 없습니다. label.bat 에서 정답을 붙이고 '학습하고 결과 보기'를 먼저 해 주세요."
                                  % (spec["label"], "덩어리" if unit == "block" else "줄"))
         path = models.ensure_model(spec, self.cfg.models_dir, log, False)
-        store = self._store(spec)
+        store = _Memory() if fresh else self._store(spec)
         items = [(b.id, b.text) for b in ex.doc.blocks] if unit == "block" else [(l.id, l.text) for b in ex.doc.blocks for l in b.lines]
         vecs, new, sec = models.embed(spec, path, [t for _, t in items], store, self.cfg.max_len, log)
+        new_items, uniq = new, len({text_key(t) for _, t in items})
         w = float(self.cfg.title_weight or 0.0)
         need_sentences = stage == "before" or w > 0
         svecs = positive = None
@@ -239,7 +268,8 @@ class Scorer:
                     if t is not None:
                         by_id[i] = (1.0 - w) * by_id[i] + w * t
         store.save()
-        out = {"block": {}, "line": {}, "new": new, "seconds": sec,
+        out = {"block": {}, "line": {}, "new": new, "seconds": sec, "items": len(items), "uniq": uniq, "new_items": new_items,
+               "fresh": bool(fresh),
                "classifier": None if clf is None else {"trained": clf.get("trained", ""), "yes": clf.get("yes"), "no": clf.get("no")}}
         if unit == "block":
             out["block"] = by_id
@@ -250,6 +280,7 @@ class Scorer:
                     vals = [by_id[l.id] for l in b.lines if l.id in by_id]
                     if vals:
                         out["block"][b.id] = max(vals)
+        out["wall"] = time.perf_counter() - t_start
         return out
 
 

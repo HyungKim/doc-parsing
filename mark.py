@@ -34,6 +34,7 @@ def main() -> int:
     ap.add_argument("--stage", choices=["after", "before"], default="after", help="after(학습한 분류기, 기본) | before(기준 문장)")
     ap.add_argument("--threshold", type=float, default=0.5, help="이 점수 이상이면 '예'로 표시 (기본 0.5)")
     ap.add_argument("--method", choices=["annot", "paint"], default="annot", help="PDF 표시 방식: annot(형광펜 주석, 기본) | paint(쪽에 직접 칠하기)")
+    ap.add_argument("--fresh", action="store_true", help="--no-ui 에서: 보관해 둔 계산을 쓰지 않고 처음부터 다시 계산한다(걸린 시간을 잴 때)")
     ap.add_argument("--sentences", help="기준 문장 파일 (기본: 프로그램 폴더의 screen_sentences.txt)")
     ap.add_argument("--labels", help="정답 파일 (기본: 프로그램 폴더의 labels/labels.json). 분류기는 그 옆 classifiers 폴더에서 읽음")
     ap.add_argument("--max-len", type=int, default=512, help="모델에 넣는 글의 최대 길이(토큰). 학습 때와 같아야 함 (기본 512)")
@@ -69,7 +70,7 @@ def main() -> int:
     if args.no_ui:
         if not files or not args.model or not args.unit:
             raise SystemExit("[오류] --no-ui 에는 파일과 --model, --unit 이 필요합니다. (예: python mark.py 보고서.pdf --no-ui --model bge-m3 --unit line)")
-        from marking import core, make
+        from marking import core, make, times
         scorer = core.Scorer(cfg)
         log = lambda msg: print(msg, flush=True)
         bad = 0
@@ -77,7 +78,7 @@ def main() -> int:
             log("표시하는 중: %s" % p.name)
             try:
                 ex = core.extract(p)
-                got = make.make(scorer, ex, args.model, args.unit, args.stage, args.threshold, args.method, log)
+                got = make.make(scorer, ex, args.model, args.unit, args.stage, args.threshold, args.method, log, fresh=args.fresh)
             except (ValueError, SystemExit) as exc:
                 raise SystemExit("[오류] %s" % exc)
             except Exception as exc:
@@ -85,11 +86,15 @@ def main() -> int:
                 log("  실패: %s: %s" % (type(exc).__name__, exc))
                 continue
             log("  '예'로 본 %s %d개 / 전체 %d개" % ("줄" if got["unit"] == "line" else "덩어리", got["yes"], got["total"]))
+            for _, name, did, sec, one, remark in times.detail_rows(got):
+                log("  걸린 시간 · %-6s %8s   %s%s%s" % (name, times.fmt(sec), did, "" if one == "-" else " · " + one, " · " + remark if remark else ""))
+            log("  걸린 시간 · 합계   %8s" % times.fmt(got["timing"]["total"]))
             for n in got["notes"]:
                 log("  " + n)
             if got["marked"]:
                 log("  표시한 파일: %s" % (make.mark_dir(cfg) / got["marked"]))
             log("  요약 화면:   %s" % (make.mark_dir(cfg) / got["page"]))
+        log("걸린 시간 기록: %s" % (make.mark_dir(cfg) / "times.html"))
         return 1 if bad else 0
 
     from marking import server

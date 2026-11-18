@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from . import times
 from .core import VIEW_NAME, Extracted
 
 
@@ -74,14 +75,17 @@ def _pos(box) -> str:
 
 
 def write_page(ex: Extracted, scores: dict, view: str, threshold: float, marks: list, settings: dict, out_path: Path,
-               made_files: List[dict], notes: List[str]) -> None:
-    """settings: {"model", "stage", "classifier", "title_weight", "threshold_note", "method"}  made_files: [{"label", "href"}]"""
+               made_files: List[dict], notes: List[str], time_box: str = "") -> None:
+    """settings: {"model", "stage", "classifier", "title_weight", "threshold_note", "method"}  made_files: [{"label", "href"}]
+
+    time_box: 단계마다 걸린 시간을 보여 주는 상자(times.box가 만든 HTML). 설정 상자 바로 아래에 넣는다.
+    """
     by_line = view == "line"
     yes_ids = {m.id for m in marks}
     unit_word = "줄" if by_line else "덩어리"
     total = len(scores["line" if by_line else "block"])
     p = ["<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
-         "<title>표시 결과 · %s</title><style>%s</style></head><body>" % (esc(ex.name), CSS),
+         "<title>표시 결과 · %s</title><style>%s%s</style></head><body>" % (esc(ex.name), CSS, times.CSS),
          "<h1>표시 결과 · %s</h1>" % esc(ex.name),
          "<p class=\"sub\">학습해 둔 모델로 점수를 매겨, 문턱 이상인 %s을 '검토 필요(예)'로 표시했습니다 · 만든 때 %s</p>" % (unit_word, time.strftime("%Y-%m-%d %H:%M:%S"))]
     clf = settings.get("classifier")
@@ -100,6 +104,7 @@ def write_page(ex: Extracted, scores: dict, view: str, threshold: float, marks: 
     for n in notes:
         p.append("<p class=\"sub\">%s</p>" % esc(n))
     p.append("</div>")
+    p.append(time_box)
 
     # '예'가 있는 쪽으로 바로 가기
     pages_yes = {}

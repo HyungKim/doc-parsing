@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from docparse.report import _shell, esc
+from marking import times as mtimes
 from screening.report import CSS as SCREEN_CSS
 
 from . import core, ollama, prompts
@@ -75,6 +76,16 @@ table.it tr.rej td{background:rgba(120,120,120,.07)}
 table.two{border-collapse:collapse;background:var(--card);border:1px solid var(--line);font-size:13px;margin:6px 0}
 table.two th,table.two td{border:1px solid var(--line);padding:5px 12px;text-align:right;font-variant-numeric:tabular-nums}
 table.two th{color:var(--mute);font-weight:600;text-align:left}
+h3{font-size:15px;margin:20px 0 6px}
+table.cmp td.wr{white-space:normal;min-width:260px;max-width:420px}
+table.cmp td .mbar{display:inline-block;height:8px;background:var(--s1);border-radius:0 4px 4px 0;vertical-align:middle;margin-right:6px}
+table.cmp tr.ref td .mbar{background:var(--mute)}
+table.four{border-collapse:collapse;background:var(--card);border:1px solid var(--line);font-size:13px;margin:6px 0}
+table.four th,table.four td{border:1px solid var(--line);padding:6px 12px;text-align:left;vertical-align:top}
+table.four th{color:var(--mute);font-weight:600}
+table.four td b{font-size:14px}
+.calc{margin:6px 0;padding:8px 12px;border-left:3px solid var(--acc);background:var(--card);font-size:13.5px;line-height:1.8}
+.calc code{font:13px ui-monospace,Consolas,"Malgun Gothic",monospace}
 pre.pr{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font:12.5px/1.55 ui-monospace,Consolas,"Malgun Gothic",monospace;margin:6px 0}
 """
 
@@ -126,7 +137,10 @@ function acc(){
   $("v-acc").innerHTML='<table class="two"><tr><th>분류기가 예로 본 글 '+n+'개</th><th>LLM이 예</th><th>LLM이 아니오</th><th>합</th></tr>'+
     '<tr><th>정답이 예</th><td><b>'+c[0][0]+'</b> <small>맞음</small></td><td>'+c[0][1]+' <small>틀림 · 놓침</small></td><td>'+(c[0][0]+c[0][1])+'</td></tr>'+
     '<tr><th>정답이 아니오</th><td>'+c[1][0]+' <small>틀림 · 못 덜어냄</small></td><td><b>'+c[1][1]+'</b> <small>맞음</small></td><td>'+(c[1][0]+c[1][1])+'</td></tr></table>'+
-    '<p class="legend">정답과 같은 판단: <b>'+Math.round(100*right/n)+'%</b> ('+right+'/'+n+') · 굵은 숫자가 맞은 것입니다.</p>';
+    '<p class="legend">정답과 같은 판단: <b>'+Math.round(100*right/n)+'%</b> ('+right+'/'+n+') · 굵은 숫자가 맞은 것입니다.'+
+    (function(){var tp=c[0][0],fn=c[0][1],fp=c[1][0];var pr=tp+fp?tp/(tp+fp):null,rc=tp+fn?tp/(tp+fn):null,f=2*tp+fp+fn?2*tp/(2*tp+fp+fn):null;
+      var pc=function(v){return v===null?"-":Math.round(100*v)+"%"};
+      return ' · LLM 단계만의 정밀도 <b>'+pc(pr)+'</b> ('+tp+'/'+(tp+fp)+') · 재현율 <b>'+pc(rc)+'</b> ('+tp+'/'+(tp+fn)+') · F1 <b>'+(f===null?"-":f.toFixed(3))+'</b>'})()+'</p>';
 }
 function draw(){
   fill();acc();two();
@@ -232,6 +246,13 @@ def _headline(res: dict) -> str:
                  "LLM 없이 모두 '예'로 두면 %d%%.</li>" % (
                      esc(top["llm"]), esc(top["variant"]), esc(top["name"]), t["n"], t["kept_yes"] + t["removed_no"], round(100 * t["acc"]),
                      t["yes"], t["lost_yes"], round(100 * t["base_acc"])))
+        f1top, bl = core.best_f1_combo(res), (res.get("baseline") or {}).get("now")
+        if f1top is not None and bl is not None:
+            q = f1top["pipeline"]
+            p.append("<li><b>F1이 가장 높은 조합 (분류기 + LLM 전체 흐름)</b>: %s · %s %s — <b>F1 %s</b> (정밀도 %s · 재현율 %s)%s. "
+                     "LLM 없이 분류기만 쓰면 F1 %s (정밀도 %s · 재현율 %s). 계산 방법은 아래 '평가 지표'에 있습니다.</li>" % (
+                         esc(f1top["llm"]), esc(f1top["variant"]), esc(f1top["name"]), _f(q["f1"]), _pct(q["precision"]), _pct(q["recall"]),
+                         "" if q["exact"] else " — 표본으로 어림한 값", _f(bl["f1"]), _pct(bl["precision"]), _pct(bl["recall"])))
         safe = min(done, key=lambda x: (x["metrics"]["lost_yes"], -x["metrics"]["removed_no"], x["metrics"]["sec_mean"]))
         if safe["id"] != best["id"] and safe["metrics"]["lost_yes"] < m["lost_yes"]:
             s = safe["metrics"]
@@ -372,6 +393,204 @@ def _confusion(res: dict) -> str:
     return "".join(p)
 
 
+def _f(v: Optional[float]) -> str:
+    return "-" if v is None else "%.3f" % v
+
+
+def _n(v) -> str:
+    """개수. 표본으로 어림한 값은 소수 한 자리까지."""
+    return "%d" % v if float(v).is_integer() else "%.1f" % v
+
+
+def _bar(v: Optional[float], text: str) -> str:
+    return "-" if v is None else "<i class=\"mbar\" style=\"width:%dpx\"></i>%s" % (max(1, round(56 * v)), text)
+
+
+def _range(m: dict) -> str:
+    return "" if m.get("f1_lo") is None else " <small>(%.2f ~ %.2f)</small>" % (m["f1_lo"], m["f1_hi"])
+
+
+def _metric_cells(m: dict) -> str:
+    """'예'라고 한 수, 맞은 예, 틀린 예, 놓친 예, 정밀도, 재현율, F1, 정확도 칸."""
+    return ("<td class=\"n sep\">%s</td><td class=\"n ok\">%s</td><td class=\"n\">%s</td><td class=\"n%s\">%s</td>"
+            "<td class=\"n sep\">%s</td><td class=\"n\">%s</td><td class=\"n\"><b>%s</b>%s</td><td class=\"n\">%s</td>" % (
+                _n(m["said_yes"]), _n(m["tp"]), _n(m["fp"]), " bad" if m["fn"] else "", _n(m["fn"]),
+                _bar(m["precision"], _pct(m["precision"])), _bar(m["recall"], _pct(m["recall"])),
+                _bar(m["f1"], _f(m["f1"])), _range(m), _pct(m["accuracy"])))
+
+
+_METRIC_HEAD = ("<th class=\"sep\">'예'라고 한 수</th><th>맞은 예<br><small>정답도 '예'</small></th><th>틀린 예<br><small>정답은 '아니오'</small></th>"
+                "<th>놓친 예<br><small>정답 '예'를 '아니오'로</small></th><th class=\"sep\">정밀도<br><small>맞은 예 ÷ '예'라고 한 수</small></th>"
+                "<th>재현율<br><small>맞은 예 ÷ 정답 '예' 전체</small></th><th>F1<br><small>(95% 범위)</small></th><th>정확도<br><small>정답과 같은 판단</small></th>")
+
+
+def _calc(name: str, m: dict, extra: str = "") -> str:
+    """실제 수를 식에 넣어 보여 주는 계산 예."""
+    if m["precision"] is None or m["recall"] is None or m["f1"] is None:
+        return ""
+    return ("<div class=\"calc\"><b>계산 예 — %s</b>%s<br>"
+            "맞은 예 %s개 · 틀린 예 %s개 · 놓친 예 %s개<br>"
+            "<code>정밀도 = 맞은 예 ÷ (맞은 예 + 틀린 예) = %s ÷ (%s + %s) = %s</code><br>"
+            "<code>재현율 = 맞은 예 ÷ (맞은 예 + 놓친 예) = %s ÷ (%s + %s) = %s</code><br>"
+            "<code>F1 = 2 × 정밀도 × 재현율 ÷ (정밀도 + 재현율) = 2 × %.3f × %.3f ÷ (%.3f + %.3f) = %s</code></div>" % (
+                esc(name), extra, _n(m["tp"]), _n(m["fp"]), _n(m["fn"]),
+                _n(m["tp"]), _n(m["tp"]), _n(m["fp"]), _pct(m["precision"], 1),
+                _n(m["tp"]), _n(m["tp"]), _n(m["fn"]), _pct(m["recall"], 1),
+                m["precision"], m["recall"], m["precision"], m["recall"], _f(m["f1"])))
+
+
+def _metrics(res: dict) -> str:
+    """평가 지표: 정밀도 · 재현율 · F1 · 정확도. 전체 흐름(분류기 + LLM)으로 잰 것과 LLM 단계만으로 잰 것."""
+    base = res.get("baseline")
+    done = [c for c in res["combos"] if c["metrics"]]
+    if not base or not done:
+        return ""
+    c, d = res["classifier"], res["data"]
+    word = "줄" if c["unit"] == "line" else "덩어리"
+    top = core.best_f1_combo(res)
+    p = ["<h2>평가 지표: 정밀도 · 재현율 · F1</h2>"]
+    p.append("<p class=\"legend\">판단('예'라고 했는가)을 정답과 견주면 글은 네 칸으로 나뉩니다. 세 지표는 이 네 칸의 수로 계산합니다.</p>"
+             "<table class=\"four\"><tr><th></th><th>'예'라고 판단</th><th>'아니오'라고 판단</th></tr>"
+             "<tr><th>정답이 '예'</th><td><b>맞은 예</b> (TP)<br>찾아야 할 것을 찾음</td><td><b>놓친 예</b> (FN)<br>찾아야 할 것을 놓침</td></tr>"
+             "<tr><th>정답이 '아니오'</th><td><b>틀린 예</b> (FP)<br>볼 필요 없는 것을 넘김</td><td><b>맞은 아니오</b> (TN)<br>볼 필요 없는 것을 잘 덜어냄</td></tr></table>"
+             "<ul class=\"steps\"><li><b>정밀도</b>(precision) = 맞은 예 ÷ '예'라고 한 수. '예'라고 넘긴 것 가운데 진짜가 얼마나 되나. 낮으면 사람이 헛되이 볼 것이 많습니다.</li>"
+             "<li><b>재현율</b>(recall) = 맞은 예 ÷ 정답 '예' 전체. 찾아야 할 것 가운데 얼마나 찾았나. 낮으면 놓친 것이 많습니다.</li>"
+             "<li><b>F1</b> = 2 × 정밀도 × 재현율 ÷ (정밀도 + 재현율). 둘의 조화 평균(0~1)이라, 둘 가운데 하나만 낮아도 함께 낮아집니다.</li>"
+             "<li><b>정확도</b>(accuracy) = (맞은 예 + 맞은 아니오) ÷ 전체. 정답이 '아니오'인 글이 많으면 다 '아니오'라고 해도 높게 나오므로 F1과 함께 봅니다.</li></ul>")
+
+    # ① 전체 흐름
+    now, best = base["now"], base.get("best")
+    p.append("<h3>① 전체 흐름으로 잰 값 (분류기 + LLM) — 최종 결과의 지표</h3>")
+    p.append("<p class=\"legend\">%s의 정답이 붙은 %s <b>%d개 전체</b>(정답 '예' %d개)로 잽니다. 최종 '예'는 <b>분류기 문턱(%.2f)을 넘었고 LLM이 '아니오'라고 하지 않은 것</b>입니다. "
+             "분류기가 떨어뜨린 정답 '예' %d개는 LLM이 보지도 못했지만, 전체 흐름에서는 놓친 것이므로 <b>놓친 예에 넣습니다</b>.</p>" % (
+                 "시험용 문서" if d["part"] == "test" else "정답이 붙은 모든 문서", word, base["n"], base["yes"], c["threshold"], now["fn"]))
+    p.append("<div class=\"wrap viz\"><table class=\"cmp\"><tr><th>흐름</th>%s<th class=\"sep\">분류기만일 때보다 F1<br><small>(95%% 범위)</small></th></tr>" % _METRIC_HEAD)
+    p.append("<tr class=\"ref\"><td>분류기만 · 지금 문턱 %.2f <small>(LLM 없이, 통과한 것을 모두 '예'로)</small></td>%s<td class=\"n sep\">기준</td></tr>" % (
+        now["threshold"], _metric_cells(now)))
+    if best is not None:
+        p.append("<tr class=\"ref\"><td>분류기만 · F1이 가장 높아지는 문턱 %.2f <small>(문턱만 조절했을 때의 최고)</small></td>%s<td class=\"n sep\">%s</td></tr>" % (
+            best["threshold"], _metric_cells(best), "-" if best["f1"] is None or now["f1"] is None else "%+.3f" % (best["f1"] - now["f1"])))
+    any_est = any_part = False
+    for x in res["combos"]:
+        m = x.get("pipeline")
+        if not x["metrics"]:
+            continue
+        name = "분류기 + %s · <b>%s</b> %s" % (esc(x["llm"]), esc(x["variant"]), esc(x["name"]))
+        if m is None:
+            any_part = True
+            p.append("<tr><td>%s</td><td class=\"sep\" colspan=\"9\"><small>%d/%d개만 받아 전체 흐름으로는 재지 않았습니다(끝까지 돌리면 나옵니다)</small></td></tr>" % (name, x["done"], x["total"]))
+            continue
+        est = "" if m["exact"] else " <small>· 어림(표본 %d/%d)</small>" % (m["asked"], m["passed"])
+        any_est = any_est or not m["exact"]
+        g = m.get("f1_gain")
+        gain = "-" if g is None else "%+.3f%s" % (g, "" if m.get("gain_lo") is None else " <small>(%+.2f ~ %+.2f)</small>" % (m["gain_lo"], m["gain_hi"]))
+        p.append("<tr%s><td>%s%s</td>%s<td class=\"n sep%s\">%s</td></tr>" % (
+            " class=\"pick\"" if top is not None and x["id"] == top["id"] else "", name, est, _metric_cells(m),
+            "" if not g else (" good" if g > 0 else " bad"), gain))
+    p.append("</table></div>")
+    notes = ["파란 줄은 F1이 가장 높은 조합입니다. 막대의 길이가 값(0~1)입니다."]
+    if any_est:
+        notes.append("<b>어림</b>이라고 적힌 줄은 통과한 %s 가운데 일부만 LLM에 물은 것이라(표본으로 돌렸거나, 프롬프트 예시로 쓴 글을 뺀 경우), "
+                     "물은 글의 결과를 통과한 글 전체의 크기로 늘려 계산했습니다(그래서 개수에 소수가 나옵니다). "
+                     "정확한 값과 95%% 범위는 화면에서 '통과한 글 전부'를 골라 돌리면 나옵니다." % word)
+    if any_part:
+        notes.append("도중에 멈춘 조합은 받은 글이 문서 앞쪽에 몰려 있어 전체 흐름으로 재지 않았습니다.")
+    notes.append("'F1이 가장 높아지는 문턱'은 이 글들의 정답을 보고 고른 문턱이라 분류기에 유리하게 나온 값입니다. LLM을 붙인 것이 이 줄보다 높아야 '문턱만 조절하는 것보다 낫다'고 말할 수 있습니다.")
+    notes.append("범위는 글을 다시 뽑아 %d번 재 본 95%% 범위입니다. 'F1 차이'의 범위가 0을 걸치면 그 차이는 우연일 수 있습니다." % core.BOOT)
+    p.append("<p class=\"legend\">%s</p>" % " ".join(notes))
+    if top is not None:
+        m = top["pipeline"]
+        extra = " (전체 흐름%s)" % ("" if m["exact"] else ", 표본으로 어림한 수")
+        lost = "<br><small>놓친 예 %s개 = 분류기가 떨어뜨린 %d개 + LLM이 '아니오'라고 한 %s개</small>" % (_n(m["fn"]), m["missed_yes"], _n(m["lost_yes"]))
+        p.append(_calc("분류기 + %s · %s %s" % (top["llm"], top["variant"], top["name"]), m, extra).replace("</div>", lost + "</div>"))
+
+    # ② LLM 단계만
+    p.append("<h3>② LLM 단계만 잰 값 (분류기가 통과시킨 글 안에서)</h3>")
+    p.append("<p class=\"legend\">LLM에 실제로 넣은 %s만으로 잽니다. LLM끼리, 프롬프트 안끼리 견줄 때 보는 값입니다. "
+             "분류기가 이미 떨어뜨린 '예'는 여기 들어 있지 않으므로, <b>이 재현율은 '분류기를 통과한 예 가운데 LLM이 지킨 비율'</b>이고 ①의 재현율보다 높게 나옵니다.</p>" % word)
+    p.append("<div class=\"wrap viz\"><table class=\"cmp\"><tr><th>LLM</th><th>프롬프트 안</th><th>넣은 글</th>%s</tr>" % _METRIC_HEAD)
+    same = len({(x["metrics"]["n"], x["metrics"]["yes"]) for x in done}) == 1
+    if same:
+        p.append("<tr class=\"ref\"><td colspan=\"2\">LLM 없이 (통과한 것을 모두 '예'로)</td><td class=\"n\">%d</td>%s</tr>" % (
+            done[0]["metrics"]["n"], _metric_cells(done[0]["metrics"]["stage_base"])))
+    top_s = max(done, key=lambda x: (x["done"] == x["total"], x["metrics"]["stage"]["f1"] or 0.0, x["metrics"]["stage"]["recall"] or 0.0))
+    for x in res["combos"]:
+        m = x["metrics"]
+        if not m:
+            continue
+        note = " <small>· %d/%d개만 받음</small>" % (x["done"], x["total"]) if x["done"] < x["total"] else ""
+        p.append("<tr%s><td>%s</td><td><b>%s</b> %s%s</td><td class=\"n\">%d</td>%s</tr>" % (
+            " class=\"pick\"" if x["id"] == top_s["id"] else "", esc(x["llm"]), esc(x["variant"]), esc(x["name"]), note, m["n"], _metric_cells(m["stage"])))
+    p.append("</table></div>")
+    p.append(_calc("%s · %s %s" % (top_s["llm"], top_s["variant"], top_s["name"]), top_s["metrics"]["stage"], " (LLM 단계만)"))
+    p.append("<p class=\"legend\"><b>어느 표를 보나</b>: 최종 결과가 얼마나 좋은지 말할 때는 <b>①</b>(분류기가 놓친 것까지 넣은 값), LLM이나 프롬프트를 서로 견줄 때는 <b>②</b>를 봅니다. "
+             "<b>읽을 때 주의</b>: 이 단계의 목적은 '예'를 놓치지 않는 것이므로, F1이 높아도 <b>재현율</b>이 낮은 조합은 조심해야 합니다. "
+             "LLM은 '아니오'를 덜어 정밀도를 올리는 대신 '예'도 조금 잃어 재현율을 내립니다. F1은 그 둘을 똑같은 무게로 합친 값입니다. "
+             "읽지 못한 답은 덜어내지 않으므로 '예'라고 한 것으로 셉니다. 정답 '예'의 수가 적으면 값이 크게 흔들리니 범위를 함께 보세요.</p>")
+    return "".join(p)
+
+
+def _times(res: dict) -> str:
+    """단계마다 걸린 시간: ① 분류기가 점수를 매기는 데 ② LLM에 묻는 데(조합마다). 색은 표시하기의 시간 막대와 같다(분류기 주황, LLM 초록)."""
+    tm = (res.get("timing") or {}).get("classifier")
+    done = [x for x in res["combos"] if x["metrics"]]
+    if not tm or not done:
+        return ""
+    c, d = res["classifier"], res["data"]
+    fmt = mtimes.fmt
+    word = "줄" if c["unit"] == "line" else "덩어리"
+    scored = "줄" if c["view"] != "block" else "덩어리"            # 분류기에 넣은 크기
+    one_cls = tm["compute"] / tm["new"] if tm["new"] else None     # 분류기: 글 하나에(모델을 불러오는 시간 빼고)
+    per_doc_items = tm["items"] / float(max(1, tm["docs"]))
+    doc_cls = one_cls * per_doc_items if one_cls is not None else None
+    p = ["<h2>단계마다 걸린 시간</h2><div class=\"tm\">"]
+    p.append("<p class=\"legend\">검증은 두 단계로 돕니다: <b>① 분류기</b>가 글마다 점수를 매겨 문턱 이상을 통과시키고 → <b>② LLM</b>이 통과한 글을 하나씩 판단합니다. "
+             "아래는 이 PC에서 실제로 잰 시간입니다.</p>"
+             "<div class=\"tkey\"><span><i class=\"t1\"></i>① 분류기</span><span><i class=\"t2\"></i>② LLM</span></div>")
+    p.append("<div class=\"wrap viz\"><table class=\"cmp\"><tr><th>단계</th><th>한 일</th><th style=\"min-width:76px\">걸린 시간<br><small>합계</small></th>"
+             "<th class=\"sep\" style=\"min-width:120px\">① + ②<br><small>막대: 두 단계의 비율</small></th><th class=\"sep\">글 하나에</th>"
+             "<th style=\"min-width:84px\">문서 하나에<br><small>(어림)</small></th><th>덧붙임</th></tr>")
+    note = mtimes.classify_note(tm)
+    if not tm["new"]:
+        note += ". 분류기에 걸리는 시간을 재려면 화면의 '분류기에 걸리는 시간도 재기'에 체크하고 다시 돌리세요"
+    p.append("<tr class=\"ref\"><td><b>① 분류기</b> · %s · %s</td><td>문서 %d개의 %s %d개에 점수<br><small>정답이 붙은 %s %d개 가운데 %d개가 문턱 %.2f을 넘음</small></td>"
+             "<td class=\"n\"><b>%s</b></td><td class=\"sep\"></td><td class=\"n sep\">%s</td><td class=\"n\">%s</td><td class=\"wr\"><small>%s</small></td></tr>" % (
+                 esc(c["label"]), esc(c["view_name"]), tm["docs"], scored, tm["items"], word, d["labeled"], d["passed"], c["threshold"],
+                 fmt(tm["sec"]), "-" if one_cls is None else fmt(one_cls), "-" if doc_cls is None else fmt(doc_cls), esc(note)))
+    for x in res["combos"]:
+        m = x["metrics"]
+        if not m:
+            continue
+        st = x.get("timing") or {"new": 0, "wall": 0.0, "load": 0.0}
+        both = {"classify": {"sec": tm["sec"]}, "llm": {"sec": m["sec_total"]}}
+        doc_llm = m["sec_mean"] * d["passed_per_doc"]
+        doc = fmt(doc_llm) if doc_cls is None else "%s <small>(분류기 %s + LLM %s)</small>" % (fmt(doc_cls + doc_llm), fmt(doc_cls), fmt(doc_llm))
+        notes = []
+        if st["new"]:
+            notes.append("이번에 새로 물은 것 %d개 — 기다린 시간 %s%s" % (
+                st["new"], fmt(st["wall"]), " (모델을 불러오는 데 %s 포함)" % fmt(st["load"]) if st["load"] >= 0.05 else ""))
+        if x["done"] - st["new"] > 0:
+            notes.append("보관해 둔 답 %d개는 그 답을 받을 때 잰 시간을 더함" % (x["done"] - st["new"]))
+        if x["done"] < x["total"]:
+            notes.append("%d/%d개만 받음" % (x["done"], x["total"]))
+        p.append("<tr><td><b>② LLM</b> · %s · <b>%s</b> %s</td><td>%s %d개에 물음</td><td class=\"n\"><b>%s</b></td>"
+                 "<td class=\"sep\">%s<small>%s</small></td>"
+                 "<td class=\"n sep\">평균 <b>%s</b><br><small>가운데 값 %s · 가장 빠른 것 %s · 가장 느린 것 %s</small></td>"
+                 "<td class=\"n\">%s</td><td class=\"wr\"><small>%s</small></td></tr>" % (
+                     esc(x["llm"]), esc(x["variant"]), esc(x["name"]), word, m["n"], fmt(m["sec_total"]),
+                     mtimes.bar(both, True), fmt(tm["sec"] + m["sec_total"]),
+                     fmt(m["sec_mean"]), fmt(m["sec_median"]), fmt(m.get("sec_min")), fmt(m.get("sec_max")),
+                     doc, esc(" · ".join(notes))))
+    p.append("</table></div>")
+    p.append("<p class=\"legend\"><b>읽는 법</b>: LLM의 '걸린 시간'은 답마다 그 답을 받을 때 잰 시간(글을 읽고 답을 쓰는 시간. 모델을 메모리에 올리는 시간은 뺌)을 더한 것입니다. "
+             "그래서 보관해 둔 답을 다시 써도 같은 값이 나옵니다. 분류기의 '걸린 시간'은 이번 실행에서 실제로 걸린 시간이라, 보관해 둔 계산을 다시 쓰면 짧게 나옵니다(덧붙임에 적힙니다). "
+             "<b>문서 하나에</b>는 문서 하나에 통과하는 %s의 평균 수(%.0f개)에 글 하나의 평균 시간을 곱한 어림입니다%s. "
+             "글을 뽑는 시간과 표시한 파일을 만드는 시간은 mark.bat 의 '단계마다 걸린 시간'에 나옵니다.</p></div>" % (
+                 word, d["passed_per_doc"],
+                 "" if doc_cls is None else " (분류기는 문서 하나의 %s 평균 %.0f개에 글 하나의 시간을 곱함)" % (scored, per_doc_items)))
+    return "".join(p)
+
+
 def _summary(res: dict) -> str:
     d = res["data"]
     best = core.best_combo(res)
@@ -442,6 +661,9 @@ def _choices(res: dict) -> str:
         ("표본", "고정된 무작위 순서로 앞에서부터", "다시 돌려도 같은 글이 뽑히고, 표본을 늘리면 앞의 글이 그대로 들어 있어 받아 둔 답을 다시 씁니다.", "전부 돌리기"),
         ("프롬프트 예시(안 D)", "학습용 문서의 정답에서 예 %d개·아니오 %d개, 한 번 뽑으면 고정" % (core.N_EXAMPLES, core.N_EXAMPLES),
          "시험용 문서의 글을 예시로 쓰면 점수가 부풀려집니다. 예시가 바뀌면 답을 모두 다시 받아야 해서 고정해 둡니다.", "프롬프트 파일에 [예시] 조각을 직접 적기"),
+        ("평가 지표", "정밀도 · 재현율 · F1 · 정확도를 두 가지로: ① 분류기 + LLM 전체 흐름(정답이 붙은 글 전체로) ② LLM 단계만(통과한 글 안에서)",
+         "최종 결과를 말하려면 분류기가 놓친 '예'까지 넣어야 하고(①), LLM끼리 견주려면 같은 글에서의 판단만 봐야 합니다(②). 표본만 물었을 때 ①은 통과한 글 전체의 크기로 늘려 어림합니다.",
+         "재현율에 더 무게를 둔 F2(아직 없음)"),
         ("견주는 기준", "'예'를 같은 수만큼 남길 때 남는 글의 수", "LLM 없이 분류기 문턱만 올려도 '아니오'는 줄어듭니다. 그것보다 나아야 LLM을 붙일 값어치가 있습니다.", "덜어낸 수만 보기"),
     ]
     p = ["<details class=\"box\"><summary><b>고른 것과 그 이유</b> (묻지 않고 정한 값들)</summary><div class=\"wrap\"><table class=\"sum set\">"
@@ -495,9 +717,11 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
             "combos": [{"id": x["id"], "llm": x["llm"], "v": x["variant"], "name": x["name"]} for x in res["combos"]],
             "ans": res["answers"], "best": best["id"] if best else ""}
     blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    p = ["<style>%s%s</style>" % (SCREEN_CSS, CSS), _headline(res)]
+    p = ["<style>%s%s%s</style>" % (SCREEN_CSS, CSS, mtimes.CSS), _headline(res)]
     p.append("<h2>정답과 견준 표</h2>")
     p.append(_confusion(res))
+    p.append(_metrics(res))
+    p.append(_times(res))
     p.append("<h2>남긴 양과 지킨 '예'</h2>")
     p.append("<p class=\"legend\">분류기를 통과한 글을 100%%로 놓고, 조합마다 얼마나 남겼는지(가로)와 그 안에 '예'를 얼마나 지켰는지(세로)를 찍었습니다. "
              "<b>선보다 왼쪽 위에 있는 점</b>은 분류기 문턱만 올리는 것보다 나은 조합입니다. 점 위에 마우스를 올리면 수치가 나옵니다.</p>")

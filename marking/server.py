@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import core, make
+from . import core, make, times
 
 TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8",
-         ".png": "image/png", ".jpg": "image/jpeg", ".pdf": "application/pdf",
+         ".csv": "text/csv; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".pdf": "application/pdf",
          ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
 MAX_UPLOAD = 600 * 1024 * 1024
 
@@ -68,7 +68,9 @@ ol.items .tx{white-space:pre-wrap;word-break:break-word;min-width:0}
 .note{color:var(--mute);font-size:13px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 a{color:var(--acc)}
-</style></head><body>
+.tres{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0}
+/*TIMECSS*/
+</style></head><body class="tm">
 <h1>'검토 필요' 표시하기</h1>
 <p class="sub">학습해 둔 모델로 PDF·PPTX에 점수를 매겨, '예'로 본 글을 표시한 사본을 만듭니다. 정답과 학습 결과는 읽기만 하고 바꾸지 않습니다. 이 PC 안에서만 열리는 화면입니다.</p>
 
@@ -88,7 +90,8 @@ a{color:var(--acc)}
 <p class="sub" id="titlew"></p></div>
 
 <div class="card"><h2>3. 미리 보기와 만들기</h2>
-<div class="row"><button id="score">점수 매기고 미리 보기</button><button id="make" class="main">표시한 파일 만들기</button><button id="folder">결과 폴더 열기</button></div>
+<div class="opt"><label><input type="checkbox" id="fresh"><span>보관해 둔 계산을 쓰지 않고 처음부터 다시 계산하기 <b>(걸린 시간을 재려면 체크)</b><small>한 번 계산한 글의 점수는 보관해 두고 다시 씁니다. 그래서 학습에 쓴 문서나 두 번째로 돌리는 문서는 분류기 시간이 거의 0으로 나옵니다. 체크하면 모두 새로 계산해서, 처음 보는 문서에 걸리는 시간이 나옵니다.</small></span></label></div>
+<div class="row"><button id="score">점수 매기고 미리 보기</button><button id="make" class="main">표시한 파일 만들기</button><button id="folder">결과 폴더 열기</button><button id="timelog">걸린 시간 기록 열기</button></div>
 <div id="status"></div><div id="preview"></div><div id="results"></div></div>
 
 <script>
@@ -98,6 +101,23 @@ let S={files:[],ch:null,preview:null,pkey:"",busy:false,sel:{model:"",view:"line
 const METHODS=[["annot","형광펜 주석","PDF 프로그램에서 하나씩 지울 수 있고, 메모에 점수가 들어갑니다"],["paint","쪽에 직접 칠하기","주석을 보여 주지 않는 프로그램이나 인쇄에서도 보입니다. 지울 수 없습니다"]];
 const VIEWNOTE={block:"덩어리의 글 전체를 한 번에 넣어 덩어리에 표시",agg:"줄마다 넣고, 가장 높은 줄의 점수로 덩어리에 표시",line:"줄마다 넣어 줄에 표시"};
 
+const TSTAGES=[["extract","글 뽑기",0],["classify","분류기",1],["write","파일 만들기",3]];
+function fmt(s){
+  if(s==null)return "-";s=Math.max(0,s);
+  if(s>0&&s<0.005)return "0.01초 미만";
+  if(s<0.995)return s.toFixed(2)+"초";
+  if(s<10)return s.toFixed(1)+"초";
+  if(s<60)return Math.round(s)+"초";
+  if(s<3600){const w=Math.round(s);return Math.floor(w/60)+"분 "+String(w%60).padStart(2,"0")+"초";}
+  const w=Math.round(s/60);return Math.floor(w/60)+"시간 "+String(w%60).padStart(2,"0")+"분";
+}
+function share(part,total){if(total<=0)return "-";const p=100*part/total;return p>0&&p<1?"1% 미만":Math.round(p)+"%";}
+function timeBar(t){
+  const total=TSTAGES.reduce((a,x)=>a+t[x[0]].sec,0);if(total<=0)return "";
+  const cells=TSTAGES.map(x=>t[x[0]].sec>0?`<i class="t${x[2]}" style="flex:${(t[x[0]].sec/total).toFixed(4)} 1 0" title="${x[1]} ${fmt(t[x[0]].sec)} (${share(t[x[0]].sec,total)})"></i>`:"").join("");
+  const key=TSTAGES.map(x=>`<span><i class="t${x[2]}"></i>${x[1]} <b>${fmt(t[x[0]].sec)}</b> (${share(t[x[0]].sec,total)})</span>`).join("")+`<span>합계 <b>${fmt(total)}</b></span>`;
+  return `<div class="tbar2" role="img" aria-label="단계별 걸린 시간">${cells}</div><div class="tkey">${key}</div>`;
+}
 async function post(path,body){
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Mark":"1"},body:JSON.stringify(body||{})});
   const j=await r.json().catch(()=>({ok:false,error:"응답을 읽지 못했습니다"}));
@@ -133,8 +153,8 @@ function radio(name,value,cur,label,note,off){
 function render(){
   // 파일
   if(!S.files.length)$("files").innerHTML=`<p class="sub">아직 올린 파일이 없습니다.</p>`;
-  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">덩어리</th><th class="n">줄</th><th>상태</th><th></th></tr>`+S.files.map(f=>
-    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":f.blocks}</td><td class="n">${f.error?"-":f.lines}</td>`+
+  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">덩어리</th><th class="n">줄</th><th class="n">글 뽑는 데</th><th>상태</th><th></th></tr>`+S.files.map(f=>
+    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":f.blocks}</td><td class="n">${f.error?"-":f.lines}</td><td class="n">${f.error?"-":fmt(f.seconds)}</td>`+
     `<td>${f.error?`<span style="color:var(--err)">${esc(f.error)}</span>`:(f.blocks?"글을 뽑았습니다":"뽑힌 글이 없습니다")}</td><td><button data-rm="${esc(f.name)}">빼기</button></td></tr>`).join("")+`</table>`;
   // 모델
   $("models").innerHTML=S.ch.models.map(m=>{
@@ -183,18 +203,26 @@ async function doScore(){
 }
 $("score").onclick=()=>busy(doScore);
 $("make").onclick=()=>busy(async()=>{
-  if(!S.preview||S.pkey!==key())await doScore();
-  say("표시한 파일을 만드는 중입니다…");
+  const fresh=$("fresh").checked;
+  if(!fresh&&(!S.preview||S.pkey!==key()))await doScore();
+  if(fresh&&!S.files.length)throw new Error("먼저 파일을 올려 주세요.");
+  say(fresh?"보관해 둔 계산을 쓰지 않고 처음부터 계산해 표시하는 중입니다…":"표시한 파일을 만드는 중입니다…");
   const note=S.sel.thrmode==="saved"?`지난 학습에서 '예'의 ${S.ch.target?Math.round(S.ch.target*100):90}%를 찾던 문턱`:"";
-  const j=await post("/make",Object.assign(body(),{threshold:S.sel.thr,method:S.sel.method,note:note}));
+  const j=await post("/make",Object.assign(body(),{threshold:S.sel.thr,method:S.sel.method,note:note,fresh:fresh}));
   $("results").innerHTML=`<h2 style="margin-top:14px">만든 결과</h2><table class="res"><tr><th>파일</th><th class="n">'예'</th><th>표시한 사본</th><th>요약 화면</th></tr>`+j.results.map(r=>
     r.error?`<tr><td>${esc(r.name)}</td><td colspan="3" style="color:var(--err)">${esc(r.error)}</td></tr>`:
     `<tr><td>${esc(r.name)}</td><td class="n">${r.yes} / ${r.total}</td><td>${r.marked?`<a href="/out/mark/${encodeURIComponent(r.marked)}" target="_blank">${esc(r.marked)}</a> <button data-open="${esc(r.marked)}">기본 프로그램으로 열기</button>`:"-"}</td>`+
     `<td><a href="/out/mark/${encodeURIComponent(r.page)}" target="_blank">열기</a>${(r.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("")}</td></tr>`).join("")+
-    `</table><p class="sub">결과는 <code>${esc(j.folder)}</code> 에 있습니다. 모델이나 크기를 바꿔 다시 만들면 다른 이름으로 따로 쌓여서 서로 견줘 볼 수 있습니다.</p>`;
+    `</table><p class="sub">결과는 <code>${esc(j.folder)}</code> 에 있습니다. 모델이나 크기를 바꿔 다시 만들면 다른 이름으로 따로 쌓여서 서로 견줘 볼 수 있습니다.</p>`+
+    `<h2 style="margin-top:14px">단계마다 걸린 시간</h2>`+j.results.filter(r=>!r.error&&r.timing).map(r=>{const c=r.timing.classify;
+      return `<div class="tres"><b>${esc(r.name)}</b>`+timeBar(r.timing)+
+        (c.reused?`<div class="note">분류기: 보관해 둔 계산 ${c.reused}개를 다시 써서 그만큼 짧게 나왔습니다. 처음부터 재려면 위의 '처음부터 다시 계산하기'에 체크하고 다시 만드세요.</div>`:
+          (c["new"]?`<div class="note">분류기: 글 ${c["new"]}개를 새로 계산 · 모델을 불러오는 데 ${fmt(Math.max(0,c.sec-c.compute))}, 점수 계산에 ${fmt(c.compute)}</div>`:""))+`</div>`;}).join("")+
+    `<p class="sub">막대에서 칸의 너비가 그 단계에 걸린 시간에 비례합니다. 표시하기에는 LLM 단계가 없습니다(LLM에 걸리는 시간은 verify.bat 결과 화면에 나옵니다). 자세한 표는 요약 화면에, 실행마다의 기록은 '걸린 시간 기록'에 있습니다.</p>`;
   say("만들었습니다.");
 });
 $("folder").onclick=()=>busy(async()=>{await post("/open",{});say("");});
+$("timelog").onclick=()=>window.open("/out/mark/times.html","_blank");
 document.addEventListener("click",e=>{
   const t=e.target;
   if(t.dataset&&t.dataset.rm)busy(async()=>{await post("/remove",{name:t.dataset.rm});S.preview=null;await load();say("");});
@@ -226,7 +254,7 @@ d.addEventListener("dragleave",()=>d.classList.remove("over"));
 d.addEventListener("drop",e=>{e.preventDefault();d.classList.remove("over");const l=e.dataTransfer.files;busy(()=>upload(l));});
 load().catch(e=>say(e.message,true));
 </script></body></html>
-"""
+""".replace("/*TIMECSS*/", times.CSS)
 
 
 class App:
@@ -280,14 +308,15 @@ class App:
             ex = self.docs.get(name)
             item = {"name": name, "error": self.errors.get(name, "")}
             if ex is not None:
-                item.update(ex.counts, kind=ex.kind)
+                item.update(ex.counts, kind=ex.kind, seconds=round(ex.seconds, 3))
             files.append(item)
         return {"ok": True, "files": files, "choices": core.choices(self.cfg)}
 
-    def _scores(self, ex: core.Extracted, model: str, view: str, stage: str) -> dict:
+    def _scores(self, ex: core.Extracted, model: str, view: str, stage: str, fresh: bool = False) -> dict:
+        """fresh: 보관해 둔 계산을 쓰지 않고 다시 계산한다(걸린 시간을 잴 때)."""
         key = (ex.name, model, view, stage)
-        if key not in self.scores:
-            self.scores[key] = self.scorer.score(ex, model, view, stage, self.log)
+        if fresh or key not in self.scores:
+            self.scores[key] = self.scorer.score(ex, model, view, stage, self.log, fresh)
         return self.scores[key]
 
     def score(self, body: dict) -> dict:
@@ -323,6 +352,7 @@ class App:
         if method not in ("annot", "paint"):
             raise ValueError("표시 방식을 알 수 없습니다")
         note = str(body.get("note") or "")[:120]
+        fresh = bool(body.get("fresh"))
         results = []
         with self.lock:
             for name in self.order:
@@ -332,8 +362,12 @@ class App:
                     continue
                 self.log("표시하는 중: %s" % name)
                 try:
-                    sc = self._scores(ex, model, view, stage)
-                    results.append(make.make(self.scorer, ex, model, view, stage, threshold, method, self.log, sc, note))
+                    sc = self._scores(ex, model, view, stage, fresh)
+                    res = make.make(self.scorer, ex, model, view, stage, threshold, method, self.log, sc, note, fresh)
+                    results.append(res)
+                    t = res["timing"]
+                    print("  %s: 글 뽑기 %s · 분류기 %s · 파일 만들기 %s · 합계 %s" % (
+                        name, times.fmt(t["extract"]["sec"]), times.fmt(t["classify"]["sec"]), times.fmt(t["write"]["sec"]), times.fmt(t["total"])), flush=True)
                 except ValueError:
                     raise
                 except Exception as exc:

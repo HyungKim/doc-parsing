@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--prompts", default="", help="돌릴 프롬프트 안의 기호. 쉼표로 여러 개 (기본: 모두)")
     ap.add_argument("--sample", type=int, default=core.DEFAULT_SAMPLE, help="LLM에 넣을 글 수 (기본 %d, 0이면 통과한 글 전부)" % core.DEFAULT_SAMPLE)
     ap.add_argument("--with-rejected", action="store_true", help="분류기가 떨어뜨린 글도 같은 수만큼 LLM에 넣어 본다")
+    ap.add_argument("--fresh-classifier", action="store_true",
+                    help="분류기에 걸리는 시간도 잰다: 보관해 둔 계산을 쓰지 않고 점수를 다시 계산 (결과는 같고 시간이 더 듦)")
     ap.add_argument("--prompts-file", help="프롬프트 파일 (기본: 프로그램 폴더의 verify_prompts.txt)")
     ap.add_argument("--sentences", help="기준 문장 파일 (기본: 프로그램 폴더의 screen_sentences.txt)")
     ap.add_argument("--labels", help="정답 파일 (기본: 프로그램 폴더의 labels/labels.json). 분류기는 그 옆 classifiers 폴더에서 읽음")
@@ -79,7 +81,7 @@ def main() -> int:
         setup = core.Setup(classifier=args.classifier, view=args.unit, thr_mode=args.threshold_mode, threshold=args.threshold,
                            llms=[n.strip() for n in args.llm.split(",") if n.strip()],
                            variants=[k.strip() for k in args.prompts.split(",") if k.strip()],
-                           sample=max(0, args.sample), with_rejected=args.with_rejected)
+                           sample=max(0, args.sample), with_rejected=args.with_rejected, fresh=args.fresh_classifier)
         seen = {"n": 0}
 
         def log(msg: str) -> None:                 # 글마다의 진행 줄은 열 번에 한 번만 찍는다
@@ -106,6 +108,26 @@ def main() -> int:
             print("  %s · %s %s: %d개 가운데 %d개 남김, '아니오' %d/%d 덜어냄, '예' %d/%d 잃음, 정답과 같은 판단 %d%%, 글 하나에 %.1f초" % (
                 c["llm"], c["variant"], c["name"], m["n"], m["kept"], m["removed_no"], m["no"], m["lost_yes"], m["yes"],
                 round(100 * m["acc"]), m["sec_mean"]))
+        bl = res["baseline"]["now"]
+        num = lambda v: "-" if v is None else "%.3f" % v
+        pc = lambda v: "-" if v is None else "%d%%" % round(100 * v)
+        print("평가 지표 (분류기 + LLM 전체 흐름 · 정답이 붙은 글 %d개, 정답 '예' %d개)" % (res["baseline"]["n"], res["baseline"]["yes"]))
+        print("  분류기만(문턱 %.2f): 정밀도 %s · 재현율 %s · F1 %s" % (bl["threshold"], pc(bl["precision"]), pc(bl["recall"]), num(bl["f1"])))
+        for c in res["combos"]:
+            q = c.get("pipeline")
+            if q:
+                print("  분류기 + %s · %s %s: 정밀도 %s · 재현율 %s · F1 %s%s" % (
+                    c["llm"], c["variant"], c["name"], pc(q["precision"]), pc(q["recall"]), num(q["f1"]), "" if q["exact"] else " (표본으로 어림)"))
+        from marking import times as mtimes
+        tm = res["timing"]["classifier"]
+        print("단계마다 걸린 시간")
+        print("  ① 분류기: %s (%s)" % (mtimes.fmt(tm["sec"]), mtimes.classify_note(tm)))
+        for c in res["combos"]:
+            m = c["metrics"]
+            if m:
+                print("  ② LLM %s · %s %s: 합계 %s · 글 하나에 평균 %s (가운데 값 %s · 가장 빠른 것 %s · 가장 느린 것 %s)" % (
+                    c["llm"], c["variant"], c["name"], mtimes.fmt(m["sec_total"]), mtimes.fmt(m["sec_mean"]), mtimes.fmt(m["sec_median"]),
+                    mtimes.fmt(m["sec_min"]), mtimes.fmt(m["sec_max"])))
         print("결과 화면: %s" % page.resolve())
         return 0
 

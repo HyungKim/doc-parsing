@@ -70,6 +70,7 @@ class Setup:
     variants: List[str] = field(default_factory=list)       # 안의 기호. 비어 있으면 모두
     sample: int = DEFAULT_SAMPLE              # 0이면 전체
     with_rejected: bool = False               # 분류기가 떨어뜨린 글도 LLM에 넣어 본다
+    fresh: bool = False                       # 분류기 시간도 재기: 보관해 둔 계산을 쓰지 않고 점수를 다시 계산한다
 
 
 @dataclass
@@ -152,8 +153,10 @@ def _key(m: dict, plan: dict, user: str) -> str:
 
 # ---------------------------------------------------------------- 글과 분류기 점수
 
-def load_data(env: Env, scorer: mcore.Scorer, classifier: str, view: str, log: Callable[[str], None]) -> dict:
-    """시험용 문서에서 정답이 붙은 글과 그 분류기 점수를 모은다.
+def load_data(env: Env, scorer: mcore.Scorer, classifier: str, view: str, log: Callable[[str], None], fresh: bool = False) -> dict:
+    """시험용 문서에서 정답이 붙은 글과 그 분류기 점수를 모은다. 분류기 단계에 걸린 시간도 함께 잰다("timing").
+
+    fresh: 보관해 둔 계산을 쓰지 않고 점수를 모두 다시 계산한다(분류기에 걸리는 시간을 잴 때). 점수는 같고 시간만 더 든다.
 
     시험용 문서에 '예'와 '아니오' 정답이 모두 있어야 한다. 없으면 정답이 붙은 모든 문서로 대신하고 그 사실을 알린다
     (그때는 분류기가 이미 본 글이 섞여서 분류기 쪽 수치가 실제보다 좋게 나온다).
@@ -191,9 +194,12 @@ def load_data(env: Env, scorer: mcore.Scorer, classifier: str, view: str, log: C
     use = test if part == "test" else docs
     test_keys = {(l.key if l is not None else b.key) for d in test for _, b, l in things(d)}
     items: List[Item] = []
+    spent = {"sec": 0.0, "compute": 0.0, "items": 0, "new": 0, "uniq": 0}        # 분류기 단계에 걸린 시간(문서마다 더한다)
     for d in use:
         ex = SimpleNamespace(doc=d, titles={b.page: b.title for b in d.blocks})
-        sc = scorer.score(ex, classifier, view, "after", log)
+        sc = scorer.score(ex, classifier, view, "after", log, fresh)
+        for k, src in (("sec", "wall"), ("compute", "seconds"), ("items", "items"), ("new", "new_items"), ("uniq", "uniq")):
+            spent[k] += sc.get(src) or 0
         for bi, b, l in things(d):
             y = label_of(b, l)
             s = sc["line"].get(l.id) if l is not None else sc["block"].get(b.id)
@@ -207,8 +213,9 @@ def load_data(env: Env, scorer: mcore.Scorer, classifier: str, view: str, log: C
                 items.append(Item(b.uid, d.name, b.page, "block", b.key, b.text, b.title, int(y), float(s), around, True, len(items)))
     if not any(it.label == 1 for it in items) or not any(it.label == 0 for it in items):
         raise ValueError("정답에 '예'와 '아니오'가 모두 있어야 잴 수 있습니다. label.bat 에서 정답을 더 붙여 주세요.")
+    timing = dict(spent, reused=max(0, spent["uniq"] - spent["new"]), docs=len(use), fresh=bool(fresh), at=time.strftime("%Y-%m-%d %H:%M:%S"))
     return {"docs": docs, "labels": labels, "unit": unit, "part": part, "test_names": [d.name for d in test],
-            "use_names": [d.name for d in use], "test_keys": test_keys, "items": items}
+            "use_names": [d.name for d in use], "test_keys": test_keys, "items": items, "timing": timing}
 
 
 def pick_threshold(env: Env, items: List[Item], classifier: str, view: str, mode: str, custom: Optional[float]) -> tuple:
@@ -339,7 +346,7 @@ def _left(seconds: float) -> str:
 def prepare(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None], data: Optional[dict] = None) -> dict:
     """LLM에 묻기 직전까지: 글을 모으고, 문턱을 정하고, 넣을 글을 고르고, 안마다의 프롬프트를 만든다."""
     cfg = env.cfg
-    data = data or load_data(env, scorer, setup.classifier, setup.view, log)
+    data = data or load_data(env, scorer, setup.classifier, setup.view, log, bool(setup.fresh))
     thr, thr_note = pick_threshold(env, data["items"], setup.classifier, setup.view, setup.thr_mode, setup.threshold)
     chosen = choose(data["items"], thr, int(setup.sample or 0), bool(setup.with_rejected))
     parts, variants = prompts.load(env.prompts_file)
@@ -412,6 +419,7 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
         log("받아 둔 답을 그대로 씁니다(새로 물을 글이 없음).")
     got: Dict[str, list] = {}
     errors: Dict[str, str] = {}
+    stats: Dict[str, dict] = {}                    # 조합 → 이번 실행에서 새로 물은 수, 기다린 초, 모델을 불러온 초
     stopped = False
     last = None
     # 남은 시간 어림: 조합마다 지금까지 잰 시간의 평균을 쓴다. 아직 재지 않은 조합은 같은 종류(짧은 답/긴 답)의 평균으로 대신한다
@@ -463,6 +471,7 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
                         handle = ollama.Call()
                         if stop is not None:
                             stop.call = handle
+                        t_ask = time.perf_counter()
                         try:
                             if stop is not None and stop.is_set():
                                 raise ollama.Cancelled()
@@ -476,6 +485,10 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
                         else:
                             answers.put(key, rec)
                             done += 1
+                            st = stats.setdefault(cid, {"new": 0, "wall": 0.0, "load": 0.0})
+                            st["new"] += 1
+                            st["wall"] += time.perf_counter() - t_ask
+                            st["load"] += float(rec.get("load") or 0.0)
                             left_n[cid] = left_n.get(cid, 1) - 1
                             t = timing.setdefault(cid, [0.0, 0])
                             t[0], t[1] = t[0] + rec["sec"], t[1] + 1
@@ -490,7 +503,7 @@ def run(env: Env, setup: Setup, scorer: mcore.Scorer, log: Callable[[str], None]
         log("멈췄습니다. 받은 답까지로 결과를 만듭니다…")
     if last:
         ollama.unload(last)                            # 끝나면 메모리를 돌려준다
-    return assemble(env, setup, prep, llms, got, errors, stopped, state)
+    return assemble(env, setup, prep, llms, got, errors, stopped, state, stats)
 
 
 def _answer_part(content: str, logprobs: list) -> list:
@@ -539,6 +552,122 @@ def _ask(m: dict, system: str, user: str, v: prompts.Variant, handle: Optional[o
 
 
 # ---------------------------------------------------------------- 수치
+
+def prf(tp: float, fp: float, fn: float, tn: float) -> dict:
+    """정답과 견준 네 칸의 수 → 정밀도 · 재현율 · F1 · 정확도.
+
+        tp  정답 '예' · 판단 '예'  (맞은 예)          fp  정답 '아니오' · 판단 '예'  (틀린 예)
+        fn  정답 '예' · 판단 '아니오'  (놓친 예)      tn  정답 '아니오' · 판단 '아니오'  (맞은 아니오)
+
+        정밀도(precision) = tp ÷ (tp + fp)      '예'라고 한 것 가운데 진짜 '예'의 비율
+        재현율(recall)    = tp ÷ (tp + fn)      진짜 '예' 가운데 '예'라고 찾아낸 비율
+        F1                = 2 × 정밀도 × 재현율 ÷ (정밀도 + 재현율) = 2·tp ÷ (2·tp + fp + fn)
+        정확도(accuracy)  = (tp + tn) ÷ 전체
+
+    나눌 수가 0이면 그 값은 None이다(예: '예'라고 한 것이 하나도 없으면 정밀도를 정할 수 없다).
+    F1은 진짜 '예'나 '예'라고 한 것이 하나라도 있으면 정해지고, 맞은 예가 없으면 0이다.
+    """
+    total = tp + fp + fn + tn
+    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn, "said_yes": tp + fp,
+            "precision": tp / float(tp + fp) if tp + fp > 0 else None,
+            "recall": tp / float(tp + fn) if tp + fn > 0 else None,
+            "f1": 2.0 * tp / float(2 * tp + fp + fn) if 2 * tp + fp + fn > 0 else None,
+            "accuracy": (tp + tn) / float(total) if total > 0 else None}
+
+
+def _f1(y: np.ndarray, pred: np.ndarray) -> Optional[float]:
+    tp = int((pred & (y == 1)).sum())
+    fp = int((pred & (y == 0)).sum())
+    fn = int((~pred & (y == 1)).sum())
+    return 2.0 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn > 0 else None
+
+
+def _prf_of(y: np.ndarray, pred: np.ndarray) -> dict:
+    return prf(int((pred & (y == 1)).sum()), int((pred & (y == 0)).sum()), int((~pred & (y == 1)).sum()), int((~pred & (y == 0)).sum()))
+
+
+def _boot_f1(y: np.ndarray, pred: np.ndarray, base: Optional[np.ndarray] = None) -> dict:
+    """글을 다시 뽑아 BOOT번 재 본 F1의 95% 범위. base(견줄 판단)를 주면 F1 차이(pred − base)의 범위도 함께 낸다.
+
+    글이 20개보다 적으면 재지 않는다(빈 것을 돌려준다).
+    """
+    n = len(y)
+    out: dict = {}
+    if n < 20:
+        return out
+    rng = np.random.RandomState(0)
+    vals, diffs = [], []
+    for _ in range(BOOT):
+        idx = rng.randint(0, n, n)
+        v = _f1(y[idx], pred[idx])
+        if v is None:
+            continue
+        vals.append(v)
+        if base is not None:
+            b = _f1(y[idx], base[idx])
+            if b is not None:
+                diffs.append(v - b)
+    if len(vals) >= BOOT // 2:
+        out["f1_lo"], out["f1_hi"] = (float(x) for x in np.percentile(vals, [2.5, 97.5]))
+    if len(diffs) >= BOOT // 2:
+        out["gain_lo"], out["gain_hi"] = (float(x) for x in np.percentile(diffs, [2.5, 97.5]))
+    return out
+
+
+def classifier_only(items: List[Item], thr: float) -> dict:
+    """LLM 없이 분류기만 쓸 때의 지표를 정답이 붙은 글 전체로 잰다. 두 가지 문턱으로 잰다.
+
+        now   지금 문턱(LLM에 넘길 글을 고른 문턱)에서: 통과한 글을 모두 '예'로 볼 때
+        best  F1이 가장 높아지는 문턱에서: 문턱만 조절해서 얻을 수 있는 가장 높은 F1.
+              이 글들의 정답을 보고 고른 문턱이라 분류기에 유리하게 나온 값이다(새 문서에서는 이보다 낮을 수 있다).
+    """
+    y = np.array([it.label for it in items])
+    s = np.array([it.score for it in items], dtype=float)
+    now = _prf_of(y, s >= thr)
+    now.update(threshold=float(thr), **_boot_f1(y, s >= thr))
+    best, best_thr = None, None
+    for t in np.unique(s):
+        m = _prf_of(y, s >= t)
+        if m["f1"] is not None and (best is None or m["f1"] > best["f1"] + 1e-12):
+            best, best_thr = m, float(t)
+    if best is not None:
+        best["threshold"] = best_thr
+    return {"n": len(items), "yes": int((y == 1).sum()), "now": now, "best": best}
+
+
+def pipeline(items: List[Item], chosen: List[Item], rows: List[Optional[dict]], complete: bool) -> Optional[dict]:
+    """분류기 + LLM 전체 흐름의 지표를 정답이 붙은 글 전체로 잰다.
+
+    최종 판단 '예' = 분류기 문턱을 넘었고, LLM이 '아니오'라고 하지 않은 글(읽지 못한 답은 '예'로 남긴다).
+    분류기가 떨어뜨린 정답 '예'는 LLM이 보지도 못했지만 전체 흐름에서는 놓친 것이므로 놓친 예(fn)에 넣는다.
+
+    통과한 글을 모두 물었으면 그대로 센다(exact). 표본만 물었으면 물은 글의 결과를 통과한 글 전체의 크기로 늘려 어림한다
+    (표본은 고정된 무작위 순서로 뽑으므로 치우치지 않는다). 도중에 멈춘 조합은 받은 글이 문서 앞쪽에 몰려 있어 재지 않는다.
+    """
+    answered = {it.uid: r for it, r in zip(chosen, rows) if it.passed and r is not None}
+    passed = [it for it in items if it.passed]
+    if not answered or not passed or not complete:
+        return None
+    asked = [it for it in passed if it.uid in answered]
+    keep = lambda it: answered[it.uid]["verdict"] != 0
+    kept_yes = sum(1 for it in asked if keep(it) and it.label == 1)
+    kept_no = sum(1 for it in asked if keep(it) and it.label == 0)
+    lost_yes = sum(1 for it in asked if not keep(it) and it.label == 1)
+    removed_no = sum(1 for it in asked if not keep(it) and it.label == 0)
+    missed_yes = sum(1 for it in items if not it.passed and it.label == 1)       # 분류기가 떨어뜨린 정답 '예'
+    rejected_no = sum(1 for it in items if not it.passed and it.label == 0)
+    exact = len(asked) == len(passed)
+    f = len(passed) / float(len(asked))
+    num = (lambda v: v) if exact else (lambda v: round(v * f, 1))
+    out = prf(num(kept_yes), num(kept_no), num(lost_yes) + missed_yes, num(removed_no) + rejected_no)
+    out.update(exact=exact, asked=len(asked), passed=len(passed), n=len(items), missed_yes=missed_yes, lost_yes=num(lost_yes))
+    if exact:                                       # 범위는 모두 물었을 때만: 글 전체를 다시 뽑아 잰다
+        y = np.array([it.label for it in items])
+        base = np.array([it.passed for it in items], dtype=bool)
+        final = np.array([it.passed and keep(it) for it in items], dtype=bool)
+        out.update(_boot_f1(y, final, base))
+    return out
+
 
 def _base_kept(y: np.ndarray, s: np.ndarray, k: int) -> Optional[int]:
     """분류기의 문턱만 올려 '예'를 k개 남길 때 남는 글의 수."""
@@ -595,15 +724,21 @@ def measure(items: List[Item], rows: List[Optional[dict]], think: bool = False) 
                 diffs.append(b - int(kk.sum()))
         if len(diffs) >= BOOT // 2:
             out["gain_lo"], out["gain_hi"] = (float(v) for v in np.percentile(diffs, [2.5, 97.5]))
+    # LLM 단계만의 지표: 분류기가 통과시킨 글 안에서, LLM이 남긴 것을 '예'라고 한 것으로 본다
+    stage = prf(kept_yes, kept_n - kept_yes, yes - kept_yes, no - (kept_n - kept_yes))
+    stage.update(_boot_f1(y, kept, np.ones(n, dtype=bool)))        # 견주는 쪽: LLM 없이 모두 '예'
+    out["stage"] = stage
+    out["stage_base"] = prf(yes, no, 0, 0)                          # LLM 없이(통과한 글을 모두 '예'로) 둘 때
     secs = np.array([r["sec"] for _, r in pairs], dtype=float)
     out.update(sec_mean=float(secs.mean()), sec_median=float(np.median(secs)), sec_total=float(secs.sum()),
+               sec_min=float(secs.min()), sec_max=float(secs.max()),
                tok_in=float(np.mean([r["in"] for _, r in pairs])), tok_out=float(np.mean([r["out"] for _, r in pairs])))
     return out
 
 
 def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str, list], errors: Dict[str, str],
-             stopped: bool, state: dict) -> dict:
-    """리포트가 읽는 결과를 만든다(JSON으로 적을 수 있는 모양)."""
+             stopped: bool, state: dict, stats: Optional[Dict[str, dict]] = None) -> dict:
+    """리포트가 읽는 결과를 만든다(JSON으로 적을 수 있는 모양). stats: 조합마다 이번 실행에서 새로 물은 수와 기다린 시간"""
     from screening import models as smodels
 
     cfg, data, chosen = env.cfg, prep["data"], prep["chosen"]
@@ -613,14 +748,20 @@ def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str
     y = np.array([it.label for it in passed])
     s = np.array([it.score for it in passed], dtype=float)
     combos = []
+    baseline = classifier_only(data["items"], prep["threshold"])     # LLM 없이 분류기만 쓸 때(견줄 기준)
     for m in llms:
         for plan in prep["plans"]:
             v = plan["variant"]
             cid = "%s|%s" % (m["id"], v.key)
             rows = got.get(cid) or []
+            done = sum(1 for r in rows if r is not None)
+            pipe = pipeline(data["items"], chosen, rows, bool(rows) and done == len(rows))
+            if pipe is not None and pipe["f1"] is not None and baseline["now"]["f1"] is not None:
+                pipe["f1_gain"] = pipe["f1"] - baseline["now"]["f1"]      # 분류기만 쓸 때보다 F1이 얼마나 달라졌나
             combos.append({"id": cid, "llm": m["label"], "variant": v.key, "name": v.name,
-                           "done": sum(1 for r in rows if r is not None), "total": len(rows),
-                           "error": errors.get(cid, ""), "metrics": measure(chosen, rows, m["think"])})
+                           "done": done, "total": len(rows),
+                           "error": errors.get(cid, ""), "metrics": measure(chosen, rows, m["think"]), "pipeline": pipe,
+                           "timing": dict((stats or {}).get(cid) or {"new": 0, "wall": 0.0, "load": 0.0})})
     return {
         "made": time.strftime("%Y-%m-%d %H:%M:%S"), "stopped": stopped, "ollama": state.get("version", ""),
         "setup": {"classifier": setup.classifier, "view": setup.view, "thr_mode": setup.thr_mode, "sample": int(setup.sample or 0),
@@ -643,9 +784,15 @@ def assemble(env: Env, setup: Setup, prep: dict, llms: List[dict], got: Dict[str
         "answers": {cid: [None if r is None else {"v": r["verdict"], "p": r["p"], "why": r.get("reason", ""), "sec": r["sec"],
                                                   "raw": r.get("content", "") if r["verdict"] is None else ""}
                           for r in rows] for cid, rows in got.items()},
-        "combos": combos,
+        "combos": combos, "baseline": baseline, "timing": {"classifier": data.get("timing")},
         "prompts_file": str(env.prompts_file), "sentences_file": str(cfg.sentences),
     }
+
+
+def best_f1_combo(result: dict) -> Optional[dict]:
+    """끝까지 돈 조합 가운데, 전체 흐름(분류기 + LLM)의 F1이 가장 높은 조합. 같으면 재현율이 높은 쪽, 그다음 빠른 쪽."""
+    done = [c for c in result["combos"] if c.get("pipeline") and c["pipeline"]["f1"] is not None]
+    return max(done, key=lambda c: (c["pipeline"]["f1"], c["pipeline"]["recall"] or 0.0, -c["metrics"]["sec_mean"])) if done else None
 
 
 def best_combo(result: dict) -> Optional[dict]:

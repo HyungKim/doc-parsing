@@ -1,10 +1,11 @@
 """표시한 결과물 만들기: 원본 사본(PDF, PPTX)과 요약 화면(HTML)을 out/mark 에 쓴다."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import core
+from . import core, times
 from .page import write_page
 
 METHODS = [("annot", "형광펜 주석 (지울 수 있음)"), ("paint", "쪽에 직접 칠하기 (어느 프로그램에서나 보임)")]
@@ -15,27 +16,30 @@ def mark_dir(cfg) -> Path:
 
 
 def make(scorer: core.Scorer, ex: core.Extracted, model_key: str, view: str, stage: str, threshold: float,
-         method: str, log: Callable[[str], None], scores: Optional[dict] = None, threshold_note: str = "") -> dict:
-    """고른 조합으로 문서 하나를 표시한다. 반환: {"name", "yes", "total", "unit", "marked", "page", "notes"}
+         method: str, log: Callable[[str], None], scores: Optional[dict] = None, threshold_note: str = "", fresh: bool = False) -> dict:
+    """고른 조합으로 문서 하나를 표시한다. 반환: {"name", "yes", "total", "unit", "marked", "page", "notes", "timing", …}
 
     marked: 표시한 원본 사본의 파일 이름(만들지 못했으면 빈 글), page: 요약 화면의 파일 이름. 둘 다 out/mark 안에 있다.
+    timing: 단계마다 걸린 시간(글 뽑기 · 분류기 · 파일 만들기). 요약 화면과 시간 기록(out/mark/times.html, times.csv)에도 남긴다.
+    fresh: 보관해 둔 계산을 쓰지 않고 점수를 처음부터 다시 계산한다(걸린 시간을 잴 때).
     """
     from screening import models
 
     cfg = scorer.cfg
     threshold = core.safe_threshold(threshold)
-    if scores is None:
-        scores = scorer.score(ex, model_key, view, stage, log)
+    if scores is None or (fresh and not scores.get("fresh")):
+        scores = scorer.score(ex, model_key, view, stage, log, fresh)
     marks = core.pick_marks(ex, scores, view, threshold)
     info = core.summary(ex, scores, view, threshold)
     out = mark_dir(cfg)
     out.mkdir(parents=True, exist_ok=True)
     stem = core.out_stem(ex, model_key, view, stage)
-    notes, marked_name = [], ""
+    notes, marked_name, t_copy = [], "", 0.0
     if not marks:
         notes.append("문턱 이상인 글이 없어 표시한 사본은 만들지 않았습니다. 문턱을 낮추거나 다른 모델·크기를 골라 보세요.")
     else:
         target = out / ("%s.%s" % (stem, ex.kind))
+        t0 = time.perf_counter()
         try:
             if ex.kind == "pdf":
                 from .pdf_mark import mark_pdf
@@ -54,10 +58,26 @@ def make(scorer: core.Scorer, ex: core.Extracted, model_key: str, view: str, sta
             marked_name = target.name
         except Exception as exc:                    # 원본에 표시하지 못해도 요약 화면은 만든다
             notes.append("원본 사본에는 표시하지 못했습니다 (%s: %s). 아래 글에서는 볼 수 있습니다." % (type(exc).__name__, str(exc)[:200]))
+        t_copy = time.perf_counter() - t0
     page_name = "%s.%s.html" % (stem, ex.kind)       # 이름이 같은 PDF와 PPTX의 화면이 서로 덮어쓰지 않게 종류를 붙인다
     made = [{"label": marked_name, "href": marked_name}] if marked_name else []
     settings = {"model": models.MODEL_BY_KEY[model_key]["label"], "stage": stage, "classifier": scores.get("classifier"),
                 "title_weight": float(cfg.title_weight or 0.0), "threshold_note": threshold_note, "method": method}
-    write_page(ex, scores, view, threshold, marks, settings, out / page_name, made, notes)
-    return {"name": ex.name, "yes": info["yes"], "total": info["total"], "unit": info["unit"],
-            "marked": marked_name, "page": page_name, "notes": notes}
+    counts = ex.counts
+    timing = {"extract": {"sec": float(ex.seconds), "pages": counts["pages"], "blocks": counts["blocks"], "lines": counts["lines"]},
+              "classify": {"sec": float(scores.get("wall") or 0.0), "compute": float(scores.get("seconds") or 0.0),
+                           "items": int(scores.get("items") or 0), "new": int(scores.get("new_items") or 0),
+                           "reused": max(0, int(scores.get("uniq") or 0) - int(scores.get("new_items") or 0)), "fresh": bool(scores.get("fresh"))},
+              "write": {"sec": t_copy, "copy": t_copy, "page": 0.0}}
+    res = {"name": ex.name, "yes": info["yes"], "total": info["total"], "unit": info["unit"], "view": view,
+           "view_name": core.VIEW_NAME[view], "model": settings["model"], "how": "학습한 분류기" if stage == "after" else "기준 문장",
+           "threshold": threshold, "marked": marked_name, "page": page_name, "notes": notes, "timing": timing,
+           "made": time.strftime("%Y-%m-%d %H:%M:%S")}
+    t0 = time.perf_counter()
+    write_page(ex, scores, view, threshold, marks, settings, out / page_name, made, notes, times.box(res))
+    timing["write"]["page"] = time.perf_counter() - t0
+    timing["write"]["sec"] = t_copy + timing["write"]["page"]
+    timing["total"] = times.total(timing)
+    write_page(ex, scores, view, threshold, marks, settings, out / page_name, made, notes, times.box(res))     # 요약 화면을 만든 시간까지 넣어 다시 쓴다
+    times.add(cfg, res)
+    return res
