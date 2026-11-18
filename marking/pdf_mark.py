@@ -119,7 +119,7 @@ def mark_pdf(src: Path, dst: Path, marks: list, method: str = "annot", author: s
                                                                                      q[2][0], q[2][1], q[3][0], q[3][1]))
                         c.FPDFAnnot_SetColor(a, c.FPDFANNOT_COLORTYPE_Color, COLOR[0], COLOR[1], COLOR[2], ANNOT_ALPHA)
                         c.FPDFAnnot_SetFlags(a, c.FPDF_ANNOT_FLAG_PRINT)
-                        c.FPDFAnnot_SetStringValue(a, b"Contents", _wide("검토 필요 · 점수 %.2f" % m.score))
+                        c.FPDFAnnot_SetStringValue(a, b"Contents", _wide(getattr(m, "note", "") or "검토 필요 · 점수 %.2f" % m.score))
                         c.FPDFAnnot_SetStringValue(a, b"T", _wide(author))
                         c.FPDFPage_CloseAnnot(a)
                     else:

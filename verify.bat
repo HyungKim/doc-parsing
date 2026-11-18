@@ -10,7 +10,8 @@ rem Ollama를 이 프로그램이 켜게 될 때 로컬 전용으로 켜지게 �
 set "OLLAMA_NO_CLOUD=1"
 
 echo 검증하기 화면을 브라우저로 엽니다. 이 PC 안에서만 열리는 화면입니다.
-echo 분류기가 검토가 필요하다고 본 글을 이 PC 안의 LLM, Ollama 에 다시 물어 봅니다.
+echo 분류기가 검토가 필요하다고 본 글을 이 PC 안의 LLM, Ollama 에 다시 물어, 정답과 견준 결과와 걸린 시간을 잽니다.
+echo   분류기 multilingual-e5-small, 덩어리 단위 - 그다음 LLM qwen3:8b, 프롬프트 안 C, 생각 모드 끔
 echo 자료는 이 PC 밖으로 나가지 않습니다. 정답과 학습 결과는 읽기만 하고 바꾸지 않습니다.
 echo 결과는 out\verify 폴더에 쌓입니다. 다 썼으면 이 창을 닫으세요.
 echo.

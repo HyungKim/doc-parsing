@@ -1,4 +1,6 @@
-"""LLM 검증 비교 화면(HTML). 인터넷 없이 브라우저로 바로 열린다.
+"""LLM 검증 결과 화면(HTML). 인터넷 없이 브라우저로 바로 열린다.
+
+5.0부터 조합이 하나(분류기 multilingual-e5-small · 덩어리 · qwen3:8b · 프롬프트 안 C · 생각 모드 끔)라서, 표마다 LLM 줄은 하나다.
 
     out/verify/index.html              가장 최근 결과
     out/verify/runs/때/index.html      돌릴 때마다의 결과(지우지 않는다)
@@ -94,19 +96,11 @@ JS = r"""
 var R=window.VERIFY;if(!R)return;
 var $=function(id){return document.getElementById(id)};
 var esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})};
-var llms=[],seen={};R.combos.forEach(function(c){if(!seen[c.llm]){seen[c.llm]=1;llms.push(c.llm)}});
-var S={llm:llms[0],base:null,filter:"all",shown:150,open:{}};
-function combos(){return R.combos.filter(function(c){return c.llm===S.llm})}
-function ans(c,i){var a=R.ans[c.id];return a?a[i]:null}
-function fill(){
-  $("v-llm").innerHTML=llms.map(function(n){return '<option'+(n===S.llm?' selected':'')+'>'+esc(n)+'</option>'}).join("");
-  var cs=combos();if(!S.base||!cs.some(function(c){return c.id===S.base}))S.base=(cs.filter(function(c){return c.id===R.best})[0]||cs[0]).id;
-  $("v-base").innerHTML=cs.map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===S.base?' selected':'')+'>'+esc(c.v+" "+c.name)+'</option>'}).join("");
-}
+var C=R.combos[0],A=(C&&R.ans[C.id])||[];
+var S={filter:"all",shown:150,open:{}};
 function match(i){
-  var it=R.items[i],b=R.ans[S.base]?R.ans[S.base][i]:null,f=S.filter;
+  var it=R.items[i],b=A[i],f=S.filter;
   if(f==="all")return true;
-  if(f==="split"){var vs={};combos().forEach(function(c){var a=ans(c,i);if(a&&a.v!==null)vs[a.v]=1});return Object.keys(vs).length>1}
   if(!b)return false;
   var keep=b.v!==0;
   if(f==="lost")return it.y===1&&!keep&&it.ps;
@@ -114,24 +108,25 @@ function match(i){
   if(f==="left")return it.y===0&&keep&&it.ps;
   if(f==="kept")return it.y===1&&keep&&it.ps;
   if(f==="rescue")return !it.ps&&keep;
+  if(f==="unread")return b.v===null;
   return true;
 }
 function chip(a,it){
   if(!a)return '<span class="chip q" title="아직 받지 않은 답">–</span>';
-  var p=a.p===null?"":" "+a.p.toFixed(2),tip=(a.why?a.why+" · ":"")+a.sec.toFixed(1)+"초";
+  var p=a.p===null?"":" "+a.p.toFixed(2),tip=a.sec.toFixed(1)+"초";
   if(a.v===null)return '<span class="chip q" title="'+esc("읽지 못한 답: "+(a.raw||""))+'">? '+p+'</span>';
   var cls=a.v===1?"y":"n";if(it.y===1&&a.v===0)cls="n miss";
   return '<span class="chip '+cls+'" title="'+esc(tip)+'">'+(a.v===1?"예":"아니오")+p+'</span>';
 }
 function two(){
-  var b=R.ans[S.base]||[],c=[[0,0,0,0],[0,0,0,0]],any=[false,false];
-  R.items.forEach(function(it,i){var a=b[i];if(!a)return;var r=it.ps?0:1,k=a.v!==0?0:2;any[r]=true;c[r][k]++;if(it.y===1)c[r][k+1]++});
+  var c=[[0,0,0,0],[0,0,0,0]],any=[false,false];
+  R.items.forEach(function(it,i){var a=A[i];if(!a)return;var r=it.ps?0:1,k=a.v!==0?0:2;any[r]=true;c[r][k]++;if(it.y===1)c[r][k+1]++});
   var row=function(name,r){return '<tr><th>'+name+'</th>'+(any[r]?'<td>'+c[r][0]+'개 <small>(정답 예 '+c[r][1]+')</small></td><td>'+c[r][2]+'개 <small>(정답 예 '+c[r][3]+')</small></td>':'<td colspan="2" style="text-align:left;color:var(--mute)">LLM에 넣지 않음</td>')+'</tr>'};
   $("v-two").innerHTML='<table class="two"><tr><th></th><th>LLM이 예 (남김)</th><th>LLM이 아니오 (덜어냄)</th></tr>'+row("분류기가 예 (통과)",0)+row("분류기가 아니오 (탈락)",1)+'</table>';
 }
 function acc(){
-  var b=R.ans[S.base]||[],c=[[0,0],[0,0]],n=0;
-  R.items.forEach(function(it,i){var a=b[i];if(!a||!it.ps)return;n++;c[it.y===1?0:1][a.v!==0?0:1]++});
+  var c=[[0,0],[0,0]],n=0;
+  R.items.forEach(function(it,i){var a=A[i];if(!a||!it.ps)return;n++;c[it.y===1?0:1][a.v!==0?0:1]++});
   if(!n){$("v-acc").innerHTML="";return}
   var right=c[0][0]+c[1][1];
   $("v-acc").innerHTML='<table class="two"><tr><th>분류기가 예로 본 글 '+n+'개</th><th>LLM이 예</th><th>LLM이 아니오</th><th>합</th></tr>'+
@@ -143,21 +138,19 @@ function acc(){
       return ' · LLM 단계만의 정밀도 <b>'+pc(pr)+'</b> ('+tp+'/'+(tp+fp)+') · 재현율 <b>'+pc(rc)+'</b> ('+tp+'/'+(tp+fn)+') · F1 <b>'+(f===null?"-":f.toFixed(3))+'</b>'})()+'</p>';
 }
 function draw(){
-  fill();acc();two();
-  var cs=combos(),rows=[],n=0;
+  acc();two();
+  var rows=[],n=0;
   for(var i=0;i<R.items.length;i++){if(!match(i))continue;n++;if(n>S.shown)continue;
-    var it=R.items[i],h='<tr class="'+(it.ps?"":"rej")+'"><td class="w">'+esc(it.d)+'<br>'+it.p+'쪽</td><td class="tx" data-i="'+i+'">'+esc(it.t);
-    if(S.open[i]){cs.forEach(function(c){var a=ans(c,i);if(a&&(a.why||a.v===null))h+='<div class="why"><b>'+esc(c.v+" "+c.name)+'</b> '+esc(a.why||("읽지 못한 답: "+(a.raw||"")))+'</div>'})}
+    var it=R.items[i],a=A[i],h='<tr class="'+(it.ps?"":"rej")+'"><td class="w">'+esc(it.d)+'<br>'+it.p+'쪽</td><td class="tx" data-i="'+i+'">'+esc(it.t);
+    if(S.open[i]&&a&&a.v===null)h+='<div class="why"><b>읽지 못한 답</b> '+esc(a.raw||"(빈 답)")+'</div>';
     h+='</td><td class="c"><span class="lab '+(it.y===1?"y":"n")+'">'+(it.y===1?"예":"아니오")+'</span></td><td class="c">'+(it.ps?'<b>'+it.s.toFixed(2)+'</b>':it.s.toFixed(2))+'</td>';
-    cs.forEach(function(c){h+='<td class="c">'+chip(ans(c,i),it)+'</td>'});
+    h+='<td class="c">'+chip(a,it)+'</td>';
     rows.push(h+'</tr>');}
   $("v-count").textContent=n+"개";
-  $("v-table").innerHTML='<table class="it"><tr><th>문서 · 쪽</th><th>글 (누르면 이유를 펼침)</th><th>정답</th><th>분류기 점수</th>'+cs.map(function(c){return '<th title="'+esc(c.name)+'">'+esc(c.v)+' '+esc(c.name)+'</th>'}).join("")+'</tr>'+rows.join("")+'</table>'+
+  $("v-table").innerHTML='<table class="it"><tr><th>문서 · 쪽</th><th>글</th><th>정답</th><th>분류기 점수</th><th>LLM 판단'+(C?' <small>('+esc(C.llm)+' · '+esc(C.v+" "+C.name)+')</small>':'')+'</th></tr>'+rows.join("")+'</table>'+
     (n>S.shown?'<p><button id="v-more">더 보기 ('+(n-S.shown)+'개 남음)</button></p>':'')+(n?'':'<p class="legend">해당하는 글이 없습니다.</p>');
 }
 document.addEventListener("change",function(e){var t=e.target;
-  if(t.id==="v-llm"){S.llm=t.value;S.base=null;S.shown=150;draw()}
-  if(t.id==="v-base"){S.base=t.value;S.shown=150;draw()}
   if(t.id==="v-filter"){S.filter=t.value;S.shown=150;draw()}});
 document.addEventListener("click",function(e){var t=e.target;
   if(t.id==="v-more"){S.shown+=300;draw();return}
@@ -222,49 +215,37 @@ def _headline(res: dict) -> str:
     p.append("<li><b>잰 글</b>: %s에서 정답이 붙은 %s %d개('예' %d개) → 분류기(%s, %s, 문턱 %.2f)가 %d개를 통과시킴('예' %d개) → 그 가운데 %s를 LLM에 넣음.</li>" % (
         where, word, d["labeled"], d["yes"], esc(c["label"]), esc(c["view_name"]), c["threshold"], d["passed"], d["passed_yes"],
         "전부(%d개)" % d["chosen_passed"] if d["chosen_passed"] >= d["passed"] else "표본 %d개" % d["chosen_passed"]))
-    best = core.best_combo(res)
-    if best is None:
-        p.append("<li>끝까지 돈 조합이 아직 없습니다. 아래 표에서 진행 상황을 볼 수 있습니다.</li>")
+    done = [x for x in res["combos"] if x["metrics"]]
+    if not done:
+        p.append("<li>아직 받은 답이 없습니다. 아래 표에서 진행 상황을 볼 수 있습니다.</li>")
     else:
-        m = best["metrics"]
-        text, kind = _verdict(m)
-        p.append("<li><b>가장 많이 줄인 조합</b>: %s · %s %s — %d개 가운데 <b>%d개만 남김</b>(%s 줄임). '아니오' %d개 가운데 %d개를 덜어냈고, '예' %d개 가운데 <b>%d개를 잃음</b>.</li>" % (
-            esc(best["llm"]), esc(best["variant"]), esc(best["name"]), m["n"], m["kept"], _pct(1 - m["kept"] / float(m["n"])),
-            m["no"], m["removed_no"], m["yes"], m["lost_yes"]))
+        x = done[0]                                 # 5.0부터 조합은 하나다
+        m = x["metrics"]
+        part = "" if x["done"] == x["total"] else " <small>(%d/%d개만 받은 결과)</small>" % (x["done"], x["total"])
+        p.append("<li><b>LLM이 한 일</b>: %s · 프롬프트 안 %s %s%s — 넣은 %d개 가운데 <b>%d개만 남김</b>(%s 줄임). '아니오' %d개 가운데 %d개를 덜어냈고, '예' %d개 가운데 <b>%d개를 잃음</b>. "
+                 "정답과 같은 판단은 %d개(%d%%)이고, LLM 없이 모두 '예'로 두면 %d%%.</li>" % (
+                     esc(x["llm"]), esc(x["variant"]), esc(x["name"]), part, m["n"], m["kept"], _pct(1 - m["kept"] / float(m["n"])),
+                     m["no"], m["removed_no"], m["yes"], m["lost_yes"], m["kept_yes"] + m["removed_no"], round(100 * m["acc"]), round(100 * m["base_acc"])))
+        text, _kind = _verdict(m)
         if m["gain"] is not None:
             p.append("<li><b>LLM을 붙일 값어치</b>: '예'를 똑같이 %d개 남기도록 분류기 문턱만 올리면 %d개가 남습니다. LLM은 %d개를 남겼으니 <b>%s</b> → %s.</li>" % (
                 m["kept_yes"], m["base_kept"], m["kept"],
                 "%d개 더 줄였습니다" % m["gain"] if m["gain"] > 0 else ("같습니다" if m["gain"] == 0 else "%d개 덜 줄였습니다" % -m["gain"]), esc(text)))
         else:
             p.append("<li><b>LLM을 붙일 값어치</b>: %s.</li>" % esc(text))
+        q, bl = x.get("pipeline"), (res.get("baseline") or {}).get("now")
+        if q is not None and bl is not None:
+            p.append("<li><b>평가 지표 (분류기 + LLM 전체 흐름)</b>: <b>F1 %s</b> (정밀도 %s · 재현율 %s)%s. "
+                     "LLM 없이 분류기만 쓰면 F1 %s (정밀도 %s · 재현율 %s). 계산 방법은 아래 '평가 지표'에 있습니다.</li>" % (
+                         _f(q["f1"]), _pct(q["precision"]), _pct(q["recall"]),
+                         "" if q["exact"] else " — 표본으로 어림한 값", _f(bl["f1"]), _pct(bl["precision"]), _pct(bl["recall"])))
         p.append("<li><b>시간</b>: 글 하나에 %s. 문서 하나에 통과하는 글이 평균 %.0f개이므로 문서 하나에 약 %s.</li>" % (
             _time(m["sec_mean"]), d["passed_per_doc"], _time(m["sec_mean"] * d["passed_per_doc"])))
-        done = [x for x in res["combos"] if x["metrics"] and x["done"] == x["total"]]
-        top = _top_acc(done)
-        t = top["metrics"]
-        p.append("<li><b>정답과 같은 판단이 가장 많은 조합</b>: %s · %s %s — %d개 가운데 %d개(%d%%)를 정답과 같게 판단. '예' %d개 가운데 %d개를 놓침. "
-                 "LLM 없이 모두 '예'로 두면 %d%%.</li>" % (
-                     esc(top["llm"]), esc(top["variant"]), esc(top["name"]), t["n"], t["kept_yes"] + t["removed_no"], round(100 * t["acc"]),
-                     t["yes"], t["lost_yes"], round(100 * t["base_acc"])))
-        f1top, bl = core.best_f1_combo(res), (res.get("baseline") or {}).get("now")
-        if f1top is not None and bl is not None:
-            q = f1top["pipeline"]
-            p.append("<li><b>F1이 가장 높은 조합 (분류기 + LLM 전체 흐름)</b>: %s · %s %s — <b>F1 %s</b> (정밀도 %s · 재현율 %s)%s. "
-                     "LLM 없이 분류기만 쓰면 F1 %s (정밀도 %s · 재현율 %s). 계산 방법은 아래 '평가 지표'에 있습니다.</li>" % (
-                         esc(f1top["llm"]), esc(f1top["variant"]), esc(f1top["name"]), _f(q["f1"]), _pct(q["precision"]), _pct(q["recall"]),
-                         "" if q["exact"] else " — 표본으로 어림한 값", _f(bl["f1"]), _pct(bl["precision"]), _pct(bl["recall"])))
-        safe = min(done, key=lambda x: (x["metrics"]["lost_yes"], -x["metrics"]["removed_no"], x["metrics"]["sec_mean"]))
-        if safe["id"] != best["id"] and safe["metrics"]["lost_yes"] < m["lost_yes"]:
-            s = safe["metrics"]
-            p.append("<li><b>'예'를 가장 덜 잃은 조합</b>: %s · %s %s — %d개 가운데 %d개 남김, '예' %d개 가운데 %d개를 잃음, 분류기 문턱만 올린 것보다 %s. "
-                     "놓치지 않는 것이 더 중요하면 이쪽을 보세요.</li>" % (
-                         esc(safe["llm"]), esc(safe["variant"]), esc(safe["name"]), s["n"], s["kept"], s["yes"], s["lost_yes"],
-                         "-" if s["gain"] is None else ("%d개 더 줄임" % s["gain"] if s["gain"] > 0 else ("같음" if s["gain"] == 0 else "%d개 덜 줄임" % -s["gain"]))))
-    p.append("</ul><p class=\"legend\"><b>고른 방법</b>: 끝까지 돈 조합 가운데 '분류기 문턱만 올린 것보다 더 줄인 수'가 가장 큰 조합을 골랐습니다(같으면 빠른 쪽). "
-             "LLM은 '아니오'를 덜어내지만 '예'도 조금 잃는데, 분류기 문턱을 올려도 같은 일이 일어납니다. 그래서 '예'를 같은 수만큼 남길 때 어느 쪽이 덜 남기는지로 견줍니다. "
+    p.append("</ul><p class=\"legend\"><b>'LLM을 붙일 값어치'를 보는 방법</b>: LLM은 '아니오'를 덜어내지만 '예'도 조금 잃는데, 분류기 문턱을 올려도 같은 일이 일어납니다. "
+             "그래서 '예'를 같은 수만큼 남길 때 어느 쪽이 덜 남기는지로 견줍니다. "
              "괄호 안의 범위는 글을 다시 뽑아 %d번 재 본 95%% 범위이고, 범위가 0을 걸치면 차이가 우연일 수 있습니다.</p>" % core.BOOT)
     if res["stopped"]:
-        p.append("<p class=\"legend\"><b>도중에 멈춘 결과입니다.</b> 받지 못한 답이 있는 조합은 받은 글만으로 쟀습니다. 다시 돌리면 이어서 받습니다.</p>")
+        p.append("<p class=\"legend\"><b>도중에 멈춘 결과입니다.</b> 받은 글만으로 쟀습니다. 다시 돌리면 이어서 받습니다.</p>")
     if d["part"] != "test":
         p.append("<p class=\"legend\"><b>주의</b>: 시험용 문서에 '예'와 '아니오' 정답이 모두 있지 않아, 정답이 붙은 모든 문서로 쟀습니다. "
                  "분류기가 이미 본 글이 섞여 있어 분류기 쪽 수치가 실제보다 좋게 나옵니다. label.bat 에서 시험용 문서를 정해 두면 공정하게 잴 수 있습니다.</p>")
@@ -338,8 +319,8 @@ def _plot(res: dict) -> str:
     keys = ["<span class=\"key\"><i class=\"ln\"></i> 분류기 문턱만 올릴 때</span>"]
     for k, name in enumerate(llms):
         keys.append("<span class=\"key c%d\"><i class=\"mk s%d\"></i> %s</span>" % (min(k, 3), k % 4, esc(name)))
-    part = "<span class=\"key\">* 는 일부 글만 받은 조합(도중에 멈춤)</span>" if any(c["done"] < c["total"] for c in done) else ""
-    return ("<div class=\"viz\">%s<p class=\"legend\">%s<span class=\"key\">글자는 프롬프트 안의 기호</span>%s</p></div>" % ("".join(p), "".join(keys), part))
+    part = "<span class=\"key\">* 는 일부 글만 받은 결과(도중에 멈춤)</span>" if any(c["done"] < c["total"] for c in done) else ""
+    return ("<div class=\"viz\">%s<p class=\"legend\">%s<span class=\"key\">점 옆의 글자는 프롬프트 안의 기호</span>%s</p></div>" % ("".join(p), "".join(keys), part))
 
 
 def _top_acc(combos: List[dict]) -> dict:
@@ -385,8 +366,8 @@ def _confusion(res: dict) -> str:
                      round(80 * m["acc"]), round(100 * m["acc"]), right, m["n"]))
     p.append("</table></div>")
     p.append("<p class=\"legend\">LLM에 넣은 글은 모두 분류기가 '예'로 본 글입니다. 그 글을 정답으로 나누고(예 / 아니오), 다시 LLM의 판단으로 나눴습니다. "
-             "<b>정답과 같은 판단</b>은 '정답 예를 예로' 본 수와 '정답 아니오를 아니오로' 본 수를 더해 넣은 글 수로 나눈 것입니다. 파란 줄은 그 비율이 가장 높은 조합입니다. "
-             "괄호 안의 %%는 그 정답 안에서의 비율입니다.</p>"
+             "<b>정답과 같은 판단</b>은 '정답 예를 예로' 본 수와 '정답 아니오를 아니오로' 본 수를 더해 넣은 글 수로 나눈 것입니다. 회색 줄은 견줄 기준(LLM 없이)입니다. "
+             "괄호 안의 %는 그 정답 안에서의 비율입니다.</p>"
              "<p class=\"legend\"><b>읽을 때 주의</b>: 정답이 '아니오'인 글이 더 많으면, 무엇이든 '아니오'라고만 해도 이 비율은 높게 나옵니다. "
              "그러니 비율 하나만 보지 말고 <b>놓친 '예'</b>(빨간 숫자)가 얼마나 되는지를 함께 보세요. 이 단계에서 잃은 '예'는 뒤에서 되찾을 수 없습니다. "
              "읽지 못한 답은 '예'(남김)로 셉니다.</p>")
@@ -488,13 +469,13 @@ def _metrics(res: dict) -> str:
             " class=\"pick\"" if top is not None and x["id"] == top["id"] else "", name, est, _metric_cells(m),
             "" if not g else (" good" if g > 0 else " bad"), gain))
     p.append("</table></div>")
-    notes = ["파란 줄은 F1이 가장 높은 조합입니다. 막대의 길이가 값(0~1)입니다."]
+    notes = ["파란 줄이 최종 모델(분류기 + LLM)이고, 회색 줄은 견줄 기준입니다. 막대의 길이가 값(0~1)입니다."]
     if any_est:
-        notes.append("<b>어림</b>이라고 적힌 줄은 통과한 %s 가운데 일부만 LLM에 물은 것이라(표본으로 돌렸거나, 프롬프트 예시로 쓴 글을 뺀 경우), "
+        notes.append("<b>어림</b>이라고 적힌 줄은 통과한 %s 가운데 표본만 LLM에 물은 것이라, "
                      "물은 글의 결과를 통과한 글 전체의 크기로 늘려 계산했습니다(그래서 개수에 소수가 나옵니다). "
                      "정확한 값과 95%% 범위는 화면에서 '통과한 글 전부'를 골라 돌리면 나옵니다." % word)
     if any_part:
-        notes.append("도중에 멈춘 조합은 받은 글이 문서 앞쪽에 몰려 있어 전체 흐름으로 재지 않았습니다.")
+        notes.append("도중에 멈춘 결과는 받은 글이 문서 앞쪽에 몰려 있어 전체 흐름으로 재지 않았습니다.")
     notes.append("'F1이 가장 높아지는 문턱'은 이 글들의 정답을 보고 고른 문턱이라 분류기에 유리하게 나온 값입니다. LLM을 붙인 것이 이 줄보다 높아야 '문턱만 조절하는 것보다 낫다'고 말할 수 있습니다.")
     notes.append("범위는 글을 다시 뽑아 %d번 재 본 95%% 범위입니다. 'F1 차이'의 범위가 0을 걸치면 그 차이는 우연일 수 있습니다." % core.BOOT)
     p.append("<p class=\"legend\">%s</p>" % " ".join(notes))
@@ -506,7 +487,7 @@ def _metrics(res: dict) -> str:
 
     # ② LLM 단계만
     p.append("<h3>② LLM 단계만 잰 값 (분류기가 통과시킨 글 안에서)</h3>")
-    p.append("<p class=\"legend\">LLM에 실제로 넣은 %s만으로 잽니다. LLM끼리, 프롬프트 안끼리 견줄 때 보는 값입니다. "
+    p.append("<p class=\"legend\">LLM에 실제로 넣은 %s만으로 잽니다. LLM 단계가 한 일만 따로 볼 때의 값입니다. "
              "분류기가 이미 떨어뜨린 '예'는 여기 들어 있지 않으므로, <b>이 재현율은 '분류기를 통과한 예 가운데 LLM이 지킨 비율'</b>이고 ①의 재현율보다 높게 나옵니다.</p>" % word)
     p.append("<div class=\"wrap viz\"><table class=\"cmp\"><tr><th>LLM</th><th>프롬프트 안</th><th>넣은 글</th>%s</tr>" % _METRIC_HEAD)
     same = len({(x["metrics"]["n"], x["metrics"]["yes"]) for x in done}) == 1
@@ -523,15 +504,15 @@ def _metrics(res: dict) -> str:
             " class=\"pick\"" if x["id"] == top_s["id"] else "", esc(x["llm"]), esc(x["variant"]), esc(x["name"]), note, m["n"], _metric_cells(m["stage"])))
     p.append("</table></div>")
     p.append(_calc("%s · %s %s" % (top_s["llm"], top_s["variant"], top_s["name"]), top_s["metrics"]["stage"], " (LLM 단계만)"))
-    p.append("<p class=\"legend\"><b>어느 표를 보나</b>: 최종 결과가 얼마나 좋은지 말할 때는 <b>①</b>(분류기가 놓친 것까지 넣은 값), LLM이나 프롬프트를 서로 견줄 때는 <b>②</b>를 봅니다. "
-             "<b>읽을 때 주의</b>: 이 단계의 목적은 '예'를 놓치지 않는 것이므로, F1이 높아도 <b>재현율</b>이 낮은 조합은 조심해야 합니다. "
+    p.append("<p class=\"legend\"><b>어느 표를 보나</b>: 최종 결과가 얼마나 좋은지 말할 때는 <b>①</b>(분류기가 놓친 것까지 넣은 값), LLM 단계가 한 일만 따로 볼 때는 <b>②</b>를 봅니다. "
+             "<b>읽을 때 주의</b>: 이 단계의 목적은 '예'를 놓치지 않는 것이므로, F1이 높아도 <b>재현율</b>이 낮으면 조심해야 합니다. "
              "LLM은 '아니오'를 덜어 정밀도를 올리는 대신 '예'도 조금 잃어 재현율을 내립니다. F1은 그 둘을 똑같은 무게로 합친 값입니다. "
              "읽지 못한 답은 덜어내지 않으므로 '예'라고 한 것으로 셉니다. 정답 '예'의 수가 적으면 값이 크게 흔들리니 범위를 함께 보세요.</p>")
     return "".join(p)
 
 
 def _times(res: dict) -> str:
-    """단계마다 걸린 시간: ① 분류기가 점수를 매기는 데 ② LLM에 묻는 데(조합마다). 색은 표시하기의 시간 막대와 같다(분류기 주황, LLM 초록)."""
+    """단계마다 걸린 시간: ① 분류기가 점수를 매기는 데 ② LLM에 묻는 데. 색은 표시하기의 시간 막대와 같다(분류기 주황, LLM 초록)."""
     tm = (res.get("timing") or {}).get("classifier")
     done = [x for x in res["combos"] if x["metrics"]]
     if not tm or not done:
@@ -573,6 +554,8 @@ def _times(res: dict) -> str:
             notes.append("보관해 둔 답 %d개는 그 답을 받을 때 잰 시간을 더함" % (x["done"] - st["new"]))
         if x["done"] < x["total"]:
             notes.append("%d/%d개만 받음" % (x["done"], x["total"]))
+        if res["setup"]["with_rejected"]:
+            notes.append("왼쪽의 시간은 분류기를 통과한 %s만 센 것(떨어뜨린 글에 물은 시간은 넣지 않음)" % word)
         p.append("<tr><td><b>② LLM</b> · %s · <b>%s</b> %s</td><td>%s %d개에 물음</td><td class=\"n\"><b>%s</b></td>"
                  "<td class=\"sep\">%s<small>%s</small></td>"
                  "<td class=\"n sep\">평균 <b>%s</b><br><small>가운데 값 %s · 가장 빠른 것 %s · 가장 느린 것 %s</small></td>"
@@ -615,9 +598,7 @@ def _summary(res: dict) -> str:
         if m["no_prob"]:
             notes.append("확률을 못 받은 답 %d개" % m["no_prob"])
         if m["thought"]:
-            notes.append("생각만 하다 끊긴 답 %d개" % m["thought"])
-        if m.get("no_think"):
-            notes.append("생각 모드를 켰지만 생각 없이 답한 것 %d개(생각 모드가 없는 모델일 수 있음)" % m["no_think"])
+            notes.append("생각만 하다 끊긴 답 %d개(생각 모드를 끄지 못하는 옛 Ollama일 수 있음)" % m["thought"])
         g = m["gain"]
         p.append("<tr%s><td>%s</td><td><b>%s</b> %s</td><td>%s</td><td class=\"n\"><b>%d</b> / %d <small>(%s)</small></td>"
                  "<td class=\"n\">%d / %d <small>(%s)</small></td><td class=\"n%s\">%d / %d</td><td class=\"n\">%s</td><td class=\"n%s\">%s</td>"
@@ -645,24 +626,23 @@ def _choices(res: dict) -> str:
     rows = [
         ("LLM을 돌리는 곳", "이 PC의 Ollama %s, 주소 127.0.0.1" % esc(res["ollama"]),
          "회사 PC에 이미 있어 새로 설치할 것이 없습니다. 프록시를 거치지 않고, 이름에 cloud가 붙은 모델은 거부합니다.", "llama.cpp를 직접 실행"),
+        ("조합", "분류기 %s · %s · LLM %s · 프롬프트 안 %s · 생각 모드 끔" % (
+            esc(c["label"]), esc(c["view_name"]), esc(", ".join(res["setup"]["llms"])), esc(" ".join("%s %s" % (v["key"], v["name"]) for v in res["variants"]))),
+         "5.0에서 최종 모델로 정한 조합입니다. 표시하기(mark.bat)도 같은 조합으로 돕니다.", "4.13까지는 화면에서 다른 모델·크기·프롬프트를 골라 견줄 수 있었음"),
         ("분류기", "%s · %s · %s 학습" % (esc(c["label"]), esc(c["view_name"]), esc(c["trained"] or "?")),
-         "저장해 둔 분류기를 그때그때 읽습니다. 다시 학습하면 다음 실행부터 새 분류기를 씁니다.", "다른 모델·크기는 화면에서 고름"),
+         "저장해 둔 분류기를 그때그때 읽습니다. 다시 학습하면 다음 실행부터 새 분류기를 씁니다.", "-"),
         ("분류기 문턱", "%.4f — %s" % (c["threshold"], esc(c["thr_note"])),
          "걸러내기 비교 화면의 '%d%%를 찾는 문턱'과 같은 자리라서, 그 화면의 통과 수와 이어집니다." % pct, "지난 학습의 문턱, 0.5, 직접 정하기"),
-        ("생각 모드", "기본은 끔", "켜면 답 하나에 수백 토큰을 더 써서 수십 배 느려집니다. 생각 모드가 있는 모델(Qwen3 8B)은 화면에서 '켠 것도 함께 돌리기'를 고르면 끈 것과 나란히 견줍니다. 켠 답의 확률은 생각이 끝난 뒤 답 자리에서 읽습니다.",
-         "켠 것도 함께 돌려 정확도가 오르는지 보기(시간이 크게 듦)"),
-        ("답 받는 방식", "'예/아니오' 한 단어 + 그 자리의 확률", "출력이 짧아 빠르고, 확률이 있어 순위로도 견줄 수 있습니다. 온도는 0이라 다시 돌려도 같은 답입니다.", "이유를 함께 받기(안 F)"),
+        ("생각 모드", "끔", "qwen3:8b는 생각 모드를 켜고 끌 수 있는 모델입니다. 켜면 답 하나에 수백 토큰을 더 써서 훨씬 느려지므로 물을 때마다 끄라고 알려 줍니다.", "-"),
+        ("답 받는 방식", "'예/아니오' 한 단어 + 그 자리의 확률", "출력이 짧아 빠릅니다. 판단은 글자에서 읽고, 확률은 화면에 참고로 보여 줍니다(글자를 읽지 못했을 때만 확률로 대신함). 온도는 0이라 다시 돌려도 같은 답입니다.", "-"),
         ("읽지 못한 답", "덜어내지 않고 남김", "이 단계의 목적은 '예'를 놓치지 않는 것이라, 모를 때는 사람에게 넘깁니다.", "덜어내기"),
-        ("넣는 글의 길이", "판단할 글 %d자, 주변 글 %d자까지. 모델이 한 번에 읽는 길이 %d토큰" % (prompts.TEXT_LIMIT, prompts.CONTEXT_LIMIT, ollama.NUM_CTX),
+        ("넣는 글의 길이", "판단할 글 %d자까지. 모델이 한 번에 읽는 길이 %d토큰" % (prompts.TEXT_LIMIT, ollama.NUM_CTX),
          "긴 표가 통째로 들어가 시간이 늘어나는 것을 막습니다.", "더 길게(느려짐)"),
-        ("프롬프트의 순서", "바뀌지 않는 부분(역할, 기준, 예시, 답하는 방법)을 앞에, 글마다 달라지는 부분을 뒤에",
-         "Qwen3는 앞부분이 같으면 그 부분을 다시 읽지 않고 달라진 뒷부분만 읽어서 빠릅니다. Qwen3.5 같은 모델은 구조상 글마다 전체를 다시 읽어 입력 토큰이 많은 안일수록 느립니다(그래서 기본 모델에서 뺐습니다).",
-         "여러 글을 묶어 한 번에 묻기(아직 없음)"),
+        ("프롬프트의 순서", "바뀌지 않는 부분(역할, 사업 분야, 판단 기준, 답하는 방법)을 앞에, 글마다 달라지는 부분(판단할 글)을 뒤에",
+         "Qwen3는 앞부분이 같으면 그 부분을 다시 읽지 않고 달라진 뒷부분만 읽어서 빠릅니다.", "여러 글을 묶어 한 번에 묻기(아직 없음)"),
         ("표본", "고정된 무작위 순서로 앞에서부터", "다시 돌려도 같은 글이 뽑히고, 표본을 늘리면 앞의 글이 그대로 들어 있어 받아 둔 답을 다시 씁니다.", "전부 돌리기"),
-        ("프롬프트 예시(안 D)", "학습용 문서의 정답에서 예 %d개·아니오 %d개, 한 번 뽑으면 고정" % (core.N_EXAMPLES, core.N_EXAMPLES),
-         "시험용 문서의 글을 예시로 쓰면 점수가 부풀려집니다. 예시가 바뀌면 답을 모두 다시 받아야 해서 고정해 둡니다.", "프롬프트 파일에 [예시] 조각을 직접 적기"),
         ("평가 지표", "정밀도 · 재현율 · F1 · 정확도를 두 가지로: ① 분류기 + LLM 전체 흐름(정답이 붙은 글 전체로) ② LLM 단계만(통과한 글 안에서)",
-         "최종 결과를 말하려면 분류기가 놓친 '예'까지 넣어야 하고(①), LLM끼리 견주려면 같은 글에서의 판단만 봐야 합니다(②). 표본만 물었을 때 ①은 통과한 글 전체의 크기로 늘려 어림합니다.",
+         "최종 결과를 말하려면 분류기가 놓친 '예'까지 넣어야 하고(①), LLM 단계가 한 일만 보려면 LLM에 넣은 글에서의 판단만 봐야 합니다(②). 표본만 물었을 때 ①은 통과한 글 전체의 크기로 늘려 어림합니다.",
          "재현율에 더 무게를 둔 F2(아직 없음)"),
         ("견주는 기준", "'예'를 같은 수만큼 남길 때 남는 글의 수", "LLM 없이 분류기 문턱만 올려도 '아니오'는 줄어듭니다. 그것보다 나아야 LLM을 붙일 값어치가 있습니다.", "덜어낸 수만 보기"),
     ]
@@ -677,7 +657,7 @@ def _choices(res: dict) -> str:
 def _models(res: dict) -> str:
     p = ["<div class=\"wrap\"><table class=\"sum\"><tr><th>LLM</th><th>크기</th><th>줄인 방식</th><th>파일 크기</th><th>라이선스</th><th>생각 모드</th></tr>"]
     for m in res["llms"]:
-        think = "켬 (답하기 전에 풀이를 씀, 최대 %d토큰)" % core.THINK_TOKENS if m.get("think") else ("끔 (있는 모델이지만 끄고 씀)" if m["thinking"] else "없는 모델")
+        think = "끔 (있는 모델이지만 끄고 씀)" if m["thinking"] else "없는 모델"
         p.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class=\"n\">%.1f GB</td><td>%s</td><td>%s</td></tr>" % (
             esc(m["name"]), esc(m["params"] or "-"), esc(m["quant"] or "-"), m["size"] / 1e9,
             esc(m["license"] or "모델에 적혀 있지 않음"), think))
@@ -689,8 +669,7 @@ def _prompts(res: dict) -> str:
     p = ["<p class=\"legend\">프롬프트 파일: <code>%s</code> (메모장으로 고칠 수 있습니다) · 판단 기준은 <code>%s</code>에서 가져옵니다.</p>" % (
         esc(res["prompts_file"]), esc(res["sentences_file"]))]
     for v in res["variants"]:
-        p.append("<details class=\"box\"><summary><b>%s %s</b> = %s%s</summary>" % (
-            esc(v["key"]), esc(v["name"]), esc(" + ".join(v["parts"])), " — " + esc(v["purpose"]) if v["purpose"] else ""))
+        p.append("<details class=\"box\" open><summary><b>%s %s</b> = %s</summary>" % (esc(v["key"]), esc(v["name"]), esc(" + ".join(v["parts"]))))
         p.append("<p class=\"legend\">앞쪽 글(모든 글에 똑같이 들어감) · 답은 %d토큰까지 받음</p><pre class=\"pr\">%s</pre>" % (v["max_tokens"], esc(v["system"])))
         p.append("<p class=\"legend\">뒤쪽 글(글마다 달라짐. 아래는 첫 번째 글의 경우)</p><pre class=\"pr\">%s</pre></details>" % esc(v["sample_user"]))
     return "".join(p)
@@ -699,7 +678,7 @@ def _prompts(res: dict) -> str:
 def _runs_list(runs: List[dict], here: str, up: str) -> str:
     if not runs:
         return ""
-    p = ["<h2>지난 실행</h2><div class=\"wrap\"><table class=\"sum\"><tr><th>때</th><th>분류기</th><th>LLM</th><th>프롬프트 안</th><th>넣은 글</th><th>가장 많이 줄인 조합</th><th></th></tr>"]
+    p = ["<h2>지난 실행</h2><div class=\"wrap\"><table class=\"sum\"><tr><th>때</th><th>분류기</th><th>LLM</th><th>프롬프트 안</th><th>넣은 글</th><th>조합 (분류기 문턱만 올린 것보다 더 줄인 수)</th><th></th></tr>"]
     for r in reversed(runs):
         p.append("<tr%s><td>%s</td><td>%s · %s</td><td>%s</td><td>%s</td><td class=\"n\">%s</td><td>%s</td><td><a href=\"%sruns/%s/index.html\">열기</a></td></tr>" % (
             " class=\"now\"" if r["stamp"] == here else "", esc(r["made"]), esc(r["classifier"]), esc(r["view"]), esc(", ".join(r["llms"])),
@@ -712,10 +691,9 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
     """up: 이 화면에서 out/verify 까지 올라가는 길 ('' 또는 '../../')"""
     c = res["classifier"]
     word = "줄" if c["unit"] == "line" else "덩어리"
-    best = core.best_combo(res)
     data = {"items": [{"d": it["doc"], "p": it["page"], "t": it["text"], "y": it["label"], "s": it["score"], "ps": it["passed"]} for it in res["items"]],
             "combos": [{"id": x["id"], "llm": x["llm"], "v": x["variant"], "name": x["name"]} for x in res["combos"]],
-            "ans": res["answers"], "best": best["id"] if best else ""}
+            "ans": res["answers"]}
     blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     p = ["<style>%s%s%s</style>" % (SCREEN_CSS, CSS, mtimes.CSS), _headline(res)]
     p.append("<h2>정답과 견준 표</h2>")
@@ -723,20 +701,19 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
     p.append(_metrics(res))
     p.append(_times(res))
     p.append("<h2>남긴 양과 지킨 '예'</h2>")
-    p.append("<p class=\"legend\">분류기를 통과한 글을 100%%로 놓고, 조합마다 얼마나 남겼는지(가로)와 그 안에 '예'를 얼마나 지켰는지(세로)를 찍었습니다. "
-             "<b>선보다 왼쪽 위에 있는 점</b>은 분류기 문턱만 올리는 것보다 나은 조합입니다. 점 위에 마우스를 올리면 수치가 나옵니다.</p>")
+    p.append("<p class=\"legend\">분류기를 통과한 글을 100%로 놓고, LLM이 얼마나 남겼는지(가로)와 그 안에 '예'를 얼마나 지켰는지(세로)를 점으로 찍었습니다. "
+             "<b>점이 선보다 왼쪽 위에 있으면</b> 분류기 문턱만 올리는 것보다 나은 것입니다. 점 위에 마우스를 올리면 수치가 나옵니다.</p>")
     p.append(_plot(res))
-    p.append("<h2>조합마다의 결과</h2>")
+    p.append("<h2>LLM 단계의 결과</h2>")
     p.append(_summary(res))
     p.append("<h2>분류기 출력과 LLM 출력 견주기</h2>")
-    p.append("<p class=\"legend\">LLM에 넣은 %s마다 정답, 분류기 점수, 프롬프트 안마다의 LLM 판단을 나란히 놓았습니다. 칸의 숫자는 LLM이 본 '예'일 확률입니다. "
-             "빨간 테두리는 정답이 '예'인데 LLM이 '아니오'라고 한 것(놓침)입니다.</p>" % word)
+    p.append("<p class=\"legend\">LLM에 넣은 %s마다 정답, 분류기 점수, LLM 판단을 나란히 놓았습니다. 칸의 숫자는 LLM이 본 '예'일 확률입니다. "
+             "빨간 테두리는 정답이 '예'인데 LLM이 '아니오'라고 한 것(놓침)입니다. 읽지 못한 답(?)은 글을 누르면 LLM이 적은 글이 보입니다.</p>" % word)
     filters = [("all", "모두"), ("lost", "LLM이 놓친 '예' (정답 예, LLM 아니오)"), ("left", "LLM이 못 덜어낸 '아니오' (정답 아니오, LLM 예)"),
-               ("removed", "LLM이 덜어낸 '아니오'"), ("kept", "LLM이 지킨 '예'"), ("split", "프롬프트 안끼리 판단이 갈린 글")]
+               ("removed", "LLM이 덜어낸 '아니오'"), ("kept", "LLM이 지킨 '예'"), ("unread", "읽지 못한 답")]
     if res["setup"]["with_rejected"]:
         filters.append(("rescue", "분류기는 떨어뜨렸는데 LLM은 '예'라고 한 글"))
-    p.append("<div class=\"ctl\"><label>LLM <select id=\"v-llm\"></select></label><label>기준으로 볼 안 <select id=\"v-base\"></select></label>"
-             "<label>보기 <select id=\"v-filter\">%s</select></label><span class=\"legend\" id=\"v-count\"></span></div>" % "".join(
+    p.append("<div class=\"ctl\"><label>보기 <select id=\"v-filter\">%s</select></label><span class=\"legend\" id=\"v-count\"></span></div>" % "".join(
                  "<option value=\"%s\">%s</option>" % (k, esc(n)) for k, n in filters))
     p.append("<div id=\"v-acc\"></div><div id=\"v-two\"></div>")
     if res["setup"]["with_rejected"] and res["setup"]["sample"]:
@@ -751,7 +728,7 @@ def render(res: dict, runs: List[dict], stamp: str, up: str) -> str:
     p.append("<script>window.VERIFY=%s;</script><script>%s</script>" % (blob, JS))
     sub = "분류기가 '검토 필요'로 본 %s을 이 PC 안의 LLM으로 한 번 더 걸러 본 결과 · %s · <a href=\"%s../index.html\">추출 결과 첫 화면</a>" % (
         word, esc(res["made"]), up)
-    return _shell("LLM 검증 비교", sub, "", "".join(p))
+    return _shell("LLM 검증 결과", sub, "", "".join(p))
 
 
 def write(env: core.Env, res: dict) -> Path:

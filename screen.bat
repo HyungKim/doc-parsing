@@ -2,7 +2,7 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-title PDF-PPTX 추출 비교 - 걸러내기 모델 비교
+title PDF-PPTX 추출 비교 - 걸러내기 분류기 학습과 평가
 
 if not exist ".venv\Scripts\python.exe" goto :noinstall
 set "PYTHONUTF8=1"
@@ -33,7 +33,7 @@ if errorlevel 1 goto :runfail
 
 :screen
 echo.
-echo [2단계] 걸러내기 모델 비교: out 폴더의 추출 결과 전체
+echo [2단계] 걸러내기: out 폴더의 추출 결과 전체에 점수를 매기고 분류기를 학습시킵니다
 echo         처음 계산하는 글은 시간이 걸립니다. 한 번 계산한 글은 다음부터 건너뜁니다.
 echo.
 ".venv\Scripts\python.exe" screen.py out

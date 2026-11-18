@@ -15,7 +15,7 @@ NEED = ["numpy", "sklearn", "torch", "transformers", "sentence_transformers", "h
 @dataclass
 class Config:
     out_dir: Path
-    models: Optional[str]            # 쉼표로 나눈 모델 이름. 없으면 기본 세 가지
+    models: Optional[str]            # 모델 이름. 5.0부터 me5-small 하나뿐이라 주지 않아도 된다
     sentences: Path
     labels: Path
     target: float                    # '예' 가운데 이 비율 이상을 찾아내도록 문턱을 맞춘다
@@ -29,8 +29,7 @@ class Config:
 
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("out_dir", nargs="?", default="out", help="추출 결과 폴더 (기본: out)")
-    parser.add_argument("--models", help="돌릴 모델을 고름. 쉼표로 나눔: bge-m3,kure-v1,me5-small (기본은 이 셋). "
-                             "bge-m3-zeroshot 은 느려서 기본에서 빠져 있고 여기에 이름을 적을 때만 돕니다")
+    parser.add_argument("--models", help="쓸 모델. 5.0부터 me5-small(multilingual-e5-small) 하나뿐이라 주지 않아도 됩니다")
     parser.add_argument("--sentences", help="기준 문장 파일 (기본: 프로그램 폴더의 screen_sentences.txt)")
     parser.add_argument("--labels", help="정답 파일 (기본: 프로그램 폴더의 labels/labels.json)")
     parser.add_argument("--recall", type=float, default=0.9, help="놓치지 않으려는 '예'의 비율 (기본 0.9 = 90%%)")

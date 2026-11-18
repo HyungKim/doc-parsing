@@ -354,7 +354,7 @@ class App:
             for r in res.runs:
                 if not r.ok:
                     log("실행하지 못한 모델: %s (%s)" % (r.spec["label"], r.error))
-                elif r.spec["kind"] == "embed":
+                else:
                     for unit, name in (("block", "덩어리"), ("line", "줄")):
                         log("%s · %s: %s" % (r.spec["label"], name, "학습함" if r.after[unit] is not None else r.train_note[unit]))
             saved = res.record["text"] if res.record else ""

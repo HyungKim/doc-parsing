@@ -1,10 +1,9 @@
-"""비교할 모델을 내려받고 실행한다. 한 번 계산한 결과는 파일에 남겨 다시 계산하지 않는다.
+"""분류기가 쓰는 임베딩 모델을 내려받고 실행한다. 한 번 계산한 결과는 파일에 남겨 다시 계산하지 않는다.
 
-    임베딩 모델       글을 숫자 묶음(벡터)으로 바꾼다. bge-m3, KURE-v1, multilingual-e5-small  (기본으로 도는 세 가지)
-    문장 판별 모델    글과 문장을 함께 받아 그 문장이 글에 대해 맞는지를 따진다. bge-m3-zeroshot-v2.0-c
-                      글 하나를 기준 문장 수만큼 돌려야 해서 느리다. 4.1부터 기본에서 뺐고, --models 에 이름을 적을 때만 돈다.
+    임베딩 모델    글을 숫자 묶음(벡터)으로 바꾼다. 5.0부터 multilingual-e5-small 하나만 쓴다.
+                   (4.x에서 함께 견주던 bge-m3, KURE-v1, bge-m3-zeroshot-v2.0-c는 뺐다. 그 모델의 파일과 계산 결과는 지워도 된다.)
 
-모두 MIT 라이선스이고 PC 안에서만 돈다. 모델 파일은 처음 한 번 Hugging Face에서 내려받아 models 폴더에 둔다.
+MIT 라이선스이고 PC 안에서만 돈다. 모델 파일은 처음 한 번 Hugging Face에서 내려받아 models 폴더에 둔다.
 """
 from __future__ import annotations
 
@@ -19,18 +18,12 @@ import numpy as np
 from .items import text_key
 
 MODELS = [
-    {"key": "bge-m3", "label": "bge-m3", "repo": "BAAI/bge-m3", "kind": "embed", "prefix": "", "temp": 0.05,
-     "size": "약 2.3GB", "note": "다국어 임베딩. 가장 무난한 기준"},
-    {"key": "kure-v1", "label": "KURE-v1", "repo": "nlpai-lab/KURE-v1", "kind": "embed", "prefix": "", "temp": 0.05,
-     "size": "약 2.3GB", "note": "bge-m3를 한국어로 더 학습한 임베딩"},
     {"key": "me5-small", "label": "multilingual-e5-small", "repo": "intfloat/multilingual-e5-small", "kind": "embed",
      "prefix": "query: ", "temp": 0.02, "size": "약 0.5GB", "note": "작고 빠른 다국어 임베딩"},
-    {"key": "bge-m3-zeroshot", "label": "bge-m3-zeroshot-v2.0-c", "repo": "MoritzLaurer/bge-m3-zeroshot-v2.0-c", "kind": "nli",
-     "size": "약 1.1GB", "note": "문장 판별 모델. 정답 예시로 학습시키지 않고 기준 문장만으로 판단. 글 하나를 기준 문장 수만큼 돌린다(쌍)",
-     "default": False},                            # 느려서 기본에서 뺌. 이름을 적어 줄 때만 돈다
 ]
 MODEL_BY_KEY = {m["key"]: m for m in MODELS}
-DEFAULT_MODELS = [m for m in MODELS if m.get("default", True)]
+DEFAULT_MODELS = list(MODELS)
+REMOVED = {"bge-m3": "bge-m3", "kure-v1": "KURE-v1", "bge-m3-zeroshot": "bge-m3-zeroshot-v2.0-c"}     # 5.0에서 뺀 모델
 
 # 내려받지 않을 파일: 다른 실행 방식용 사본과 그림 등 (용량만 차지한다)
 SKIP = ["onnx/*", "openvino/*", "imgs/*", "*.onnx", "*.onnx_data", "*.jpg", "*.png", "*.webp", "*.h5", "*.ot", "*.msgpack",
@@ -186,63 +179,6 @@ def embed(spec: dict, path: Path, texts: List[str], cache: Store, max_len: int, 
     return np.stack([cache.get(k) for k in keys]) if keys else np.zeros((0, 1), dtype=np.float32), len(todo), seconds
 
 
-# ---------------------------------------------------------------- 문장 판별 모델
-
-def nli(path: Path, texts: List[str], sentences: List[str], cache: Store, max_len: int,
-        log: Callable[[str], None]) -> Tuple[np.ndarray, int, float]:
-    """(글, 문장) 쌍마다 '그 문장이 글에 대해 맞다' 쪽 값과 '아니다' 쪽 값을 구한다.
-
-    반환: (글 수 × 문장 수 × 2 배열, 새로 계산한 쌍의 수, 계산에 걸린 초)
-    """
-    def pair_key(t: str, s: str) -> str:
-        return text_key(t) + ":" + text_key(s)
-
-    todo = {}
-    for t in texts:
-        for s in sentences:
-            k = pair_key(t, s)
-            if not cache.has(k):
-                todo.setdefault(k, (t, s))
-    seconds = 0.0
-    if todo:
-        import torch
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(str(path))
-        model = AutoModelForSequenceClassification.from_pretrained(str(path))
-        model = model.float()                      # 이 모델은 절반 정밀도(16비트)로 저장돼 있어 그대로 돌리면 CPU에서 6배쯤 느리다
-        model.eval()
-        names = {str(k).lower(): int(v) for k, v in model.config.label2id.items()}
-        yes = next((v for k, v in names.items() if k.startswith("entail")), 0)
-        no = next((v for k, v in names.items() if k.startswith("contra")),
-                  next((v for k, v in names.items() if k.startswith("not")), 1 if yes == 0 else 0))
-        order = sorted(todo, key=lambda k: len(todo[k][0]))
-        work_total, work_done = float(sum(_work(todo[k][0] + todo[k][1], max_len) for k in order)), 0.0
-        if len(order) > 160:
-            log("    새로 계산할 쌍 %d개 (글 × 기준 문장. 160쌍마다 진행 상황을 알리고 저장합니다)" % len(order))
-        t0, mark = time.time(), None
-        for a in range(0, len(order), 8):
-            part = order[a:a + 8]
-            enc = tok([todo[k][0] for k in part], [todo[k][1] for k in part], truncation="only_first", max_length=max_len,
-                      padding=True, return_tensors="pt")
-            with torch.inference_mode():
-                logits = model(**enc).logits.float().numpy()
-            for k, row in zip(part, logits):
-                cache.put(k, np.array([row[yes], row[no]], dtype=np.float32))
-            work_done += sum(_work(todo[k][0] + todo[k][1], max_len) for k in part)
-            if mark is None:
-                mark = (time.time(), work_done)
-            if (a // 8) % 20 == 19 or a + 8 >= len(order):
-                _progress(log, min(a + 8, len(order)), len(order), t0, "쌍", _left(mark, work_done, work_total))
-                cache.save()
-        seconds = time.time() - t0
-        del model
-    out = np.zeros((len(texts), len(sentences), 2), dtype=np.float32)
-    for i, t in enumerate(texts):
-        for j, s in enumerate(sentences):
-            out[i, j] = cache.get(pair_key(t, s))
-    return out, len(todo), seconds
-
-
 # ---------------------------------------------------------------- 학습 전(기준 문장만으로) 점수
 
 def _softmax(x: np.ndarray) -> np.ndarray:
@@ -258,13 +194,6 @@ def zero_shot_from_vectors(item_vecs: np.ndarray, sent_vecs: np.ndarray, positiv
     return probs[:, np.array(positive)].sum(axis=1), sims.argmax(axis=1)
 
 
-def zero_shot_from_nli(pairs: np.ndarray, positive: List[bool]) -> Tuple[np.ndarray, np.ndarray]:
-    """문장 판별 모델: 기준 문장들 가운데 어느 문장이 가장 맞는지를 따져, + 문장 쪽 비중(0~1)과 가장 맞는 문장의 번호."""
-    yes = pairs[:, :, 0]
-    probs = _softmax(yes)
-    return probs[:, np.array(positive)].sum(axis=1), yes.argmax(axis=1)
-
-
 def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, x))))
 
@@ -274,10 +203,13 @@ def default_models_dir(root: Path) -> Path:
 
 
 def pick_models(names: Optional[str]) -> List[dict]:
-    """돌릴 모델. 이름을 주지 않으면 기본 세 가지(임베딩 모델)."""
+    """돌릴 모델. 5.0부터 multilingual-e5-small 하나뿐이다."""
     if not names:
         return list(DEFAULT_MODELS)
     wanted = [n.strip() for n in names.split(",") if n.strip()]
+    gone = [REMOVED[n] for n in wanted if n in REMOVED]
+    if gone:
+        raise ValueError("%s 은(는) 5.0부터 쓰지 않습니다. 분류기는 multilingual-e5-small(me5-small) 하나만 씁니다." % ", ".join(gone))
     unknown = [n for n in wanted if n not in MODEL_BY_KEY]
     if unknown:
         raise ValueError("모르는 모델 이름: %s (쓸 수 있는 이름: %s)" % (", ".join(unknown), ", ".join(MODEL_BY_KEY)))

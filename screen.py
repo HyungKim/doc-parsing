@@ -1,6 +1,6 @@
-"""2단계: 추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델들을 비교한다.
+"""2단계: 추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 분류기를 학습시키고 평가한다.
 
-    python screen.py                 out 폴더의 추출 결과를 세 모델로 점수 매기고 비교 화면을 만든다
+    python screen.py                 out 폴더의 추출 결과에 점수를 매기고 비교 화면을 만든다 (모델: multilingual-e5-small)
     python screen.py --download      모델 파일만 내려받는다
 
 1단계(compare.py)가 만든 out/이름.units.json 을 읽는다. 1단계의 결과물은 건드리지 않는다.
@@ -16,7 +16,7 @@ from screening import cli
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="1차 걸러내기 모델 비교 (bge-m3, KURE-v1, multilingual-e5-small)")
+    parser = argparse.ArgumentParser(description="1차 걸러내기: 분류기 학습과 평가 (multilingual-e5-small)")
     cli.add_common(parser)
     parser.add_argument("--download", action="store_true", help="모델 파일만 내려받고 끝냄")
     args = parser.parse_args()
@@ -30,7 +30,10 @@ def main() -> int:
         if missing:
             raise SystemExit("[오류] install_screen.bat 을 먼저 실행해 주세요.")
         cfg.download = True
-        failed = cli.download_only(cfg, log)
+        try:
+            failed = cli.download_only(cfg, log)
+        except ValueError as exc:                  # 5.0에서 뺀 모델 이름을 적었을 때 등
+            raise SystemExit("[오류] %s" % exc)
         log("모델 폴더: %s" % cfg.models_dir)
         return 1 if failed else 0
 

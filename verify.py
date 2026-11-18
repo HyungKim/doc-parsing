@@ -1,8 +1,11 @@
-"""분류기가 '검토 필요(예)'로 본 글을 이 PC 안의 LLM(Ollama)으로 한 번 더 검증하고, 모델·프롬프트별 결과와 시간을 견준다.
+"""분류기가 '검토 필요(예)'로 본 덩어리를 이 PC 안의 LLM(Ollama)으로 한 번 더 검증하고, 정답과 견준 결과와 걸린 시간을 잰다.
 
-    python verify.py                     고르는 화면을 브라우저에 띄운다 (이 PC 안에서만 열린다)
-    python verify.py --no-ui             화면 없이 기본값으로 바로 돌린다
-    python verify.py --no-ui --llm qwen3:4b-instruct,qwen3:8b --prompts A,C,F --sample 100
+5.0부터 조합은 하나로 정해져 있다: 분류기 multilingual-e5-small · 넣는 크기 덩어리 · LLM qwen3:8b · 프롬프트 안 C(사업 분야) · 생각 모드 끔.
+(4.x에 있던 --classifier, --unit, --llm, --prompts 는 없앴다.)
+
+    python verify.py                     화면을 브라우저에 띄운다 (이 PC 안에서만 열린다)
+    python verify.py --no-ui             화면 없이 바로 돌린다
+    python verify.py --no-ui --sample 0  통과한 글 전부를 LLM에 넣는다 (평가 지표가 어림이 아닌 정확한 값으로 나온다)
 
 자료는 이 PC 밖으로 나가지 않는다: Ollama에는 127.0.0.1로만 말을 걸고, 이름에 cloud가 붙은 모델은 거부한다.
 정답, 분류기, out 폴더의 문서 목록은 읽기만 한다. 결과는 out/verify 에 쌓인다.
@@ -24,20 +27,14 @@ def main() -> int:
             pass
     from verifying import core
 
-    ap = argparse.ArgumentParser(description="분류기가 '예'로 본 글을 이 PC 안의 LLM으로 한 번 더 검증하고 결과를 견줌")
+    ap = argparse.ArgumentParser(description="분류기가 '예'로 본 덩어리를 이 PC 안의 LLM(qwen3:8b · 프롬프트 안 C)으로 한 번 더 검증하고 결과와 시간을 잼")
     ap.add_argument("-o", "--out", default="out", help="추출 결과 폴더 (기본: out). 결과는 그 안의 verify 폴더에 쌓임")
     ap.add_argument("--port", type=int, default=8785, help="화면을 열 포트 (기본 8785, 쓰고 있으면 다음 번호)")
     ap.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
     ap.add_argument("--no-ui", action="store_true", help="화면 없이 바로 돌린다")
-    ap.add_argument("--classifier", default=core.DEFAULT_CLASSIFIER, help="분류기 모델: me5-small(기본), bge-m3, kure-v1")
-    ap.add_argument("--unit", choices=["block", "agg", "line"], default=core.DEFAULT_VIEW,
-                    help="넣는 크기: block(덩어리), agg(줄로 넣어 덩어리로 합침), line(줄, 기본)")
     ap.add_argument("--threshold-mode", choices=["test90", "saved", "half", "custom"], default="test90",
                     help="분류기 문턱: test90(시험 문서에서 '예'의 90%%를 찾는 문턱, 기본) | saved(지난 학습의 문턱) | half(0.5) | custom")
     ap.add_argument("--threshold", type=float, help="--threshold-mode custom 일 때의 문턱")
-    ap.add_argument("--llm", default=",".join(core.DEFAULT_LLMS),
-                    help="LLM 이름(Ollama). 쉼표로 여러 개 (기본: %s). 이름 뒤에 +think 를 붙이면 생각 모드를 켜고 돌림 (예: qwen3:8b+think)" % ",".join(core.DEFAULT_LLMS))
-    ap.add_argument("--prompts", default="", help="돌릴 프롬프트 안의 기호. 쉼표로 여러 개 (기본: 모두)")
     ap.add_argument("--sample", type=int, default=core.DEFAULT_SAMPLE, help="LLM에 넣을 글 수 (기본 %d, 0이면 통과한 글 전부)" % core.DEFAULT_SAMPLE)
     ap.add_argument("--with-rejected", action="store_true", help="분류기가 떨어뜨린 글도 같은 수만큼 LLM에 넣어 본다")
     ap.add_argument("--fresh-classifier", action="store_true",
@@ -78,9 +75,7 @@ def main() -> int:
         from marking import core as mcore
         from screening.models import ModelMissing
         from verifying import ollama, report
-        setup = core.Setup(classifier=args.classifier, view=args.unit, thr_mode=args.threshold_mode, threshold=args.threshold,
-                           llms=[n.strip() for n in args.llm.split(",") if n.strip()],
-                           variants=[k.strip() for k in args.prompts.split(",") if k.strip()],
+        setup = core.Setup(thr_mode=args.threshold_mode, threshold=args.threshold,
                            sample=max(0, args.sample), with_rejected=args.with_rejected, fresh=args.fresh_classifier)
         seen = {"n": 0}
 

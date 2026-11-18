@@ -323,7 +323,7 @@ def _glance(runs: List[ModelRun]) -> str:
             change = "%+.3f" % g["auc_gain"] if g else ("-" if a is None else "%+.3f" % (a - b))
             rows.append("<tr%s>%s<td>%s</td><td>%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td><td class=\"n\"><b>%s</b></td><td class=\"w\">%s</td></tr>" % (
                 " class=\"first\"" if k == 0 else "", first, esc(r.spec["label"]), _track(b, a), _num(b, 3), _num(a, 3) if a is not None else "-",
-                change, _gain_word(g) if g else ("학습시키지 않는 모델" if r.spec["kind"] == "nli" else "")))
+                change, _gain_word(g) if g else ""))
     if not rows:
         return ""
     return ("<p class=\"legend viz\"><b>한눈에 보기 · 순위 정확도</b> &nbsp; <span class=\"key\"><i class=\"dot\"></i>학습 전 (기준 문장만)</span>"
@@ -542,7 +542,7 @@ def _settings_table(runs: List[ModelRun]) -> str:
     body = "".join("<tr><td><b>%s</b></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
         esc(a), esc(b), esc(c), esc(d), e, esc(f)) for a, b, c, d, e, f in rows)
     return ("<details class=\"box\" style=\"max-width:none\" open><summary><b>분류기 설정</b> · 실제로 적용된 값, 뜻, 고른 이유, 다른 선택지 (scikit-learn %s)</summary>"
-            "<p class=\"legend\">값은 학습에 쓴 라이브러리가 알려 준 그대로입니다. 모델 세 가지와 덩어리·줄 단위에 모두 같은 설정을 씁니다. "
+            "<p class=\"legend\">값은 학습에 쓴 라이브러리가 알려 준 그대로입니다. 덩어리 단위와 줄 단위에 모두 같은 설정을 씁니다. "
             "화면의 '학습 후' 점수에 쓰이는 것은 로지스틱 회귀입니다.</p>"
             "<div class=\"wrap\"><table class=\"sum set\"><tr><th>설정</th><th>로지스틱 회귀</th><th>선형 SVM</th><th>뜻</th><th>이 값을 고른 이유</th><th>다른 선택지</th></tr>%s</table></div></details>" % (
                 esc(any_info.get("sklearn", "")), body))
@@ -699,8 +699,9 @@ def _headline(res: Result, runs: List[ModelRun]) -> str:
     return ("<p><b>지금까지 가장 좋은 조합</b></p><ul class=\"steps\">%s</ul>"
             "<p class=\"sub\"><b>고른 방법</b>: %s 그 가운데 <b>순위 정확도가 가장 높은 조합</b>을 골랐습니다"
             "(통과 비율은 문턱 한 곳만 보는 값이라 정답이 적을 때 더 흔들립니다. 통과 비율로 고르면 다른 조합이 나올 때는 함께 적습니다). "
-            "덩어리 단위와 줄 단위는 채점하는 대상이 달라 서로 견줄 수 없어 따로 적습니다. "
-            "다른 모델과의 차이가 0.02보다 작으면 비슷하다고 적는데, 0.02는 회사 자료로 맞춘 값이 아니라 어림으로 둔 기준입니다.</p>" % ("".join(rows), how))
+            "덩어리 단위와 줄 단위는 채점하는 대상이 달라 서로 견줄 수 없어 따로 적습니다.%s</p>" % (
+                "".join(rows), how,
+                " 다른 모델과의 차이가 0.02보다 작으면 비슷하다고 적는데, 0.02는 회사 자료로 맞춘 값이 아니라 어림으로 둔 기준입니다." if len(runs) > 1 else ""))
 
 
 def _title_section(res: Result, runs: List[ModelRun], has_labels: bool, target: str) -> str:
@@ -967,9 +968,7 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path, up: str = 
     p.append("<p class=\"legend\">파일: <code>%s</code> · 글마다 이 문장들 가운데 어느 문장에 가장 가까운지를 따져, <span class=\"plus\">+</span> 문장 쪽으로 기운 정도를 0~1 점수로 냅니다. "
              "%s"
              "오른쪽 숫자는 그 문장에 가장 가까웠던 덩어리의 수입니다(한 번도 뽑히지 않는 문장은 하는 일이 없는 문장입니다).</p>" % (
-                 esc(str(res.sentences_file)),
-                 "임베딩 모델은 글과 문장의 비슷한 정도로, 문장 판별 모델은 그 문장이 글에 대해 맞을 가능성으로 따집니다. "
-                 if any(r.spec["kind"] == "nli" for r in runs) else "글과 문장을 각각 숫자 묶음으로 바꿔 비슷한 정도로 따집니다. "))
+                 esc(str(res.sentences_file)), "글과 문장을 각각 숫자 묶음으로 바꿔 비슷한 정도로 따집니다. "))
     p.append("<div class=\"wrap\"><table class=\"sum\"><tr><th>이름</th><th>뜻</th><th>문장</th>%s</tr>" % "".join(
         "<th>%s</th>" % esc(r.spec["label"]) for r in runs))
     blocks = res.blocks
@@ -986,13 +985,10 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path, up: str = 
             p.append("<tr><td>%s</td><td colspan=\"4\" class=\"err\">실행하지 못했습니다: %s</td></tr>" % (esc(r.spec["label"]), esc(r.error)))
             continue
         ran = ("새로 계산 %d%s · 1%s에 %.2f초" % (r.new_items, r.count_word, r.count_word, r.seconds / r.new_items)) if r.new_items else "지난 계산 결과를 다시 씀"
-        if r.spec["kind"] == "nli":
-            learned = "학습시키지 않음 (기준 문장만 씀)"
-        else:
-            learned = " / ".join("%s: %s" % (name, "학습함" if r.after[u] is not None else esc(r.train_note[u] or "정답 없음"))
-                                 for u, name in (("block", "덩어리"), ("line", "줄")))
+        learned = " / ".join("%s: %s" % (name, "학습함" if r.after[u] is not None else esc(r.train_note[u] or "정답 없음"))
+                             for u, name in (("block", "덩어리"), ("line", "줄")))
         p.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-            esc(r.spec["label"]), "임베딩 + 분류기" if r.spec["kind"] == "embed" else "문장 판별", esc(r.spec["note"]), ran, learned))
+            esc(r.spec["label"]), "임베딩 + 분류기", esc(r.spec["note"]), ran, learned))
     p.append("</table></div>")
 
     # 학습 전·후 수치
@@ -1004,7 +1000,7 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path, up: str = 
     if not has_labels:
         p.append("<p class=\"legend\">정답을 붙이면 나옵니다.</p>")
     else:
-        p.append("<p class=\"legend\"><b>순위 정확도</b>: 정답이 '예'인 것을 '아니오'인 것보다 높은 점수로 줄 세운 정도(1이면 완벽, 0.5면 무작위). 문턱값과 상관없는 수치라 모델끼리 비교하기 좋습니다. "
+        p.append("<p class=\"legend\"><b>순위 정확도</b>: 정답이 '예'인 것을 '아니오'인 것보다 높은 점수로 줄 세운 정도(1이면 완벽, 0.5면 무작위). 문턱값과 상관없는 수치라 서로 비교하기 좋습니다. "
                  "<b>찾아낸 비율</b>: 정답이 '예'인 것 가운데 통과한 비율. <b>통과 비율</b>: 전체 항목 가운데 다음 단계로 넘어가는 비율(같은 만큼 찾아낸다면 낮을수록 잘 걸러 낸 것). "
                  "<b>%s 찾는 문턱에서의 통과 비율</b>: '예'의 %s 이상을 놓치지 않도록 문턱값을 낮췄을 때 통과하는 비율입니다. "
                  "학습 후 수치는 그 글을 빼고 학습시킨 분류기로 매긴 점수로 잰 것입니다(교차 검증). 굵은 초록은 그 보는 방식에서 순위 정확도가 가장 높은 칸입니다. "
@@ -1097,7 +1093,7 @@ def write_index(res: Result, path: Path, doc_files: dict, root: Path, up: str = 
     p.append("</table></div>")
     p.append("<p class=\"legend\">항목마다의 점수는 <code>out/screen/scores.json</code>에, 학습시킨 분류기는 <code>%s</code> 폴더에 들어 있습니다. "
              "모델에는 글을 최대 %d토큰까지만 넣습니다(넘는 부분은 잘림).</p>" % (esc(str(res.labels_file.parent / "classifiers")), res.max_len))
-    sub = "추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 모델 비교 · <a href=\"%sindex.html\">추출 결과 첫 화면</a>" % up
+    sub = "추출한 덩어리·줄 가운데 특허출원 검토가 필요한 것을 걸러 내는 분류기(multilingual-e5-small)의 학습과 평가 · <a href=\"%sindex.html\">추출 결과 첫 화면</a>" % up
     Path(path).write_text(_shell("1차 걸러내기 비교", sub, "", "".join(p)), encoding="utf-8")
 
 

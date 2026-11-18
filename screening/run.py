@@ -23,7 +23,7 @@ class ModelRun:
     ok: bool = True
     error: str = ""
     new_items: int = 0                   # 이번에 새로 계산한 개수 (나머지는 지난 결과를 다시 씀)
-    count_word: str = "개"               # 세는 말. 문장 판별 모델은 글과 기준 문장의 '쌍'을 센다
+    count_word: str = "개"               # 세는 말
     seconds: float = 0.0
     # 글의 지문 → 점수.  before: 기준 문장만으로(학습 전), after: 정답으로 학습시킨 분류기(학습 후)
     before: Dict[str, Dict[str, float]] = field(default_factory=lambda: {"block": {}, "line": {}})
@@ -258,64 +258,44 @@ def run(out_dir: Path, root: Path, model_names: Optional[str], sentences_file: P
         try:
             path = models.ensure_model(spec, models_dir, log, download)
             meta = {"repo": spec["repo"], "max_len": max_len, "prefix": spec.get("prefix", "")}
-            if spec["kind"] == "embed":
-                store = models.Store(cache_dir / (spec["key"] + ".npz"), meta)
-                vecs, new, sec = models.embed(spec, path, [every[k] for k in keys], store, max_len, log)
-                svecs, new_s, sec_s = models.embed(spec, path, sent_texts, store, max_len, log)
-                by_key = {k: vecs[i] for i, k in enumerate(keys)}
-                if titles:
-                    tvecs, new_t, sec_t = models.embed(spec, path, list(titles.values()), store, max_len, log)
-                    score_t, _ = models.zero_shot_from_vectors(tvecs, svecs, positive, spec["temp"])
-                    r.title_w, r.title_before = title_weight, {k: float(v) for k, v in zip(titles, score_t)}
-                    new, sec = new + new_t, sec + sec_t
-                store.save()
-                r.new_items, r.seconds = new + new_s, sec + sec_s
-                for unit in ("block", "line"):
-                    ks = list(texts[unit])
-                    if not ks:
-                        continue
-                    score, best = models.zero_shot_from_vectors(np.stack([by_key[k] for k in ks]), svecs, positive, spec["temp"])
-                    r.before[unit] = {k: float(v) for k, v in zip(ks, score)}
-                    r.best[unit] = {k: int(v) for k, v in zip(ks, best)}
-                    # 학습 후: 정답으로 분류기를 학습시켜 다시 점수를 매긴다
-                    unit_labels = block_labels if unit == "block" else {k: v for k, v in labels.items() if k in texts["line"]}
-                    unit_labels = {k: v for k, v in unit_labels.items() if k not in test_keys[unit]}
-                    trained, why = learn.train({k: by_key[k] for k in ks}, unit_labels, groups[unit])
-                    r.train_note[unit] = why
-                    if trained is not None:
-                        r.after[unit] = trained["scores"]
-                        save_classifier(labels_file.parent / "classifiers" / ("%s__%s.json" % (spec["key"], unit)), spec, unit, trained)
-                        r.train_info[unit] = trained.get("info")
-                        proc = (trained.get("info") or {}).get("process")
-                        if proc:                   # 학습 과정에서 나타난 값을 실행 창에도 알린다 (화면의 '학습 과정'과 같은 값)
-                            log("  학습(%s): 정답 %d개(예 %d · 아니오 %d) · 되풀이 %s번에 %s(한도 %d번) · 목적 함수 값 %.4f → %.4f · %.2f초" % (
-                                "덩어리" if unit == "block" else "줄", proc["n"], proc["yes"], proc["no"], proc["iters"],
-                                "멈춤" if proc["converged"] else "한도에 닿음", proc["limit"], proc["start"]["objective"], proc["end"]["objective"],
-                                proc["seconds"]))
-                        svm = trained.get("svm") or {}
-                        r.svm[unit], r.svm_note[unit] = svm.get("scores"), svm.get("note", "")
-                        if svm.get("model"):
-                            save_classifier(labels_file.parent / "classifiers" / ("%s__%s__svm.json" % (spec["key"], unit)), spec, unit,
-                                            {"folds": trained["folds"], "model": svm["model"]}, kind="linear_svm")
-            else:
-                store = models.Store(cache_dir / (spec["key"] + ".npz"), meta)
-                pairs, new, sec = models.nli(path, [every[k] for k in keys], sent_texts, store, max_len, log)
-                if titles:
-                    tpairs, new_t, sec_t = models.nli(path, list(titles.values()), sent_texts, store, max_len, log)
-                    score_t, _ = models.zero_shot_from_nli(tpairs, positive)
-                    r.title_w, r.title_before = title_weight, {k: float(v) for k, v in zip(titles, score_t)}
-                    new, sec = new + new_t, sec + sec_t
-                store.save()
-                r.new_items, r.seconds, r.count_word = new, sec, "쌍"
-                index = {k: i for i, k in enumerate(keys)}
-                for unit in ("block", "line"):
-                    ks = list(texts[unit])
-                    if not ks:
-                        continue
-                    score, best = models.zero_shot_from_nli(pairs[[index[k] for k in ks]], positive)
-                    r.before[unit] = {k: float(v) for k, v in zip(ks, score)}
-                    r.best[unit] = {k: int(v) for k, v in zip(ks, best)}
-                    r.train_note[unit] = "문장 판별 모델은 정답으로 학습시키지 않습니다(기준 문장만 씀)"
+            store = models.Store(cache_dir / (spec["key"] + ".npz"), meta)
+            vecs, new, sec = models.embed(spec, path, [every[k] for k in keys], store, max_len, log)
+            svecs, new_s, sec_s = models.embed(spec, path, sent_texts, store, max_len, log)
+            by_key = {k: vecs[i] for i, k in enumerate(keys)}
+            if titles:
+                tvecs, new_t, sec_t = models.embed(spec, path, list(titles.values()), store, max_len, log)
+                score_t, _ = models.zero_shot_from_vectors(tvecs, svecs, positive, spec["temp"])
+                r.title_w, r.title_before = title_weight, {k: float(v) for k, v in zip(titles, score_t)}
+                new, sec = new + new_t, sec + sec_t
+            store.save()
+            r.new_items, r.seconds = new + new_s, sec + sec_s
+            for unit in ("block", "line"):
+                ks = list(texts[unit])
+                if not ks:
+                    continue
+                score, best = models.zero_shot_from_vectors(np.stack([by_key[k] for k in ks]), svecs, positive, spec["temp"])
+                r.before[unit] = {k: float(v) for k, v in zip(ks, score)}
+                r.best[unit] = {k: int(v) for k, v in zip(ks, best)}
+                # 학습 후: 정답으로 분류기를 학습시켜 다시 점수를 매긴다
+                unit_labels = block_labels if unit == "block" else {k: v for k, v in labels.items() if k in texts["line"]}
+                unit_labels = {k: v for k, v in unit_labels.items() if k not in test_keys[unit]}
+                trained, why = learn.train({k: by_key[k] for k in ks}, unit_labels, groups[unit])
+                r.train_note[unit] = why
+                if trained is not None:
+                    r.after[unit] = trained["scores"]
+                    save_classifier(labels_file.parent / "classifiers" / ("%s__%s.json" % (spec["key"], unit)), spec, unit, trained)
+                    r.train_info[unit] = trained.get("info")
+                    proc = (trained.get("info") or {}).get("process")
+                    if proc:                   # 학습 과정에서 나타난 값을 실행 창에도 알린다 (화면의 '학습 과정'과 같은 값)
+                        log("  학습(%s): 정답 %d개(예 %d · 아니오 %d) · 되풀이 %s번에 %s(한도 %d번) · 목적 함수 값 %.4f → %.4f · %.2f초" % (
+                            "덩어리" if unit == "block" else "줄", proc["n"], proc["yes"], proc["no"], proc["iters"],
+                            "멈춤" if proc["converged"] else "한도에 닿음", proc["limit"], proc["start"]["objective"], proc["end"]["objective"],
+                            proc["seconds"]))
+                    svm = trained.get("svm") or {}
+                    r.svm[unit], r.svm_note[unit] = svm.get("scores"), svm.get("note", "")
+                    if svm.get("model"):
+                        save_classifier(labels_file.parent / "classifiers" / ("%s__%s__svm.json" % (spec["key"], unit)), spec, unit,
+                                        {"folds": trained["folds"], "model": svm["model"]}, kind="linear_svm")
             if r.new_items:
                 log("  새로 계산 %d%s, %.1f초 (1%s에 %.2f초)" % (r.new_items, r.count_word, r.seconds, r.count_word, r.seconds / r.new_items))
             else:

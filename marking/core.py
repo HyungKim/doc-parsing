@@ -1,4 +1,7 @@
-"""표시하기의 계산 부분: 문서에서 글과 자리를 뽑고, 고른 모델·크기로 점수를 매기고, 표시할 것을 추린다.
+"""표시하기의 계산 부분: 문서에서 글과 자리를 뽑고, 분류기로 점수를 매기고, 표시할 것을 추린다.
+
+5.0부터 표시하기는 최종 모델(분류기 multilingual-e5-small · 덩어리 → LLM)로만 돈다. 그 흐름은 marking/final.py 에 있고,
+이 모듈은 그 흐름과 LLM 견주기(verifying)가 함께 쓰는 부분이다.
 
 학습·시험·평가(screen.py, label.py)와는 따로 돈다. 이 모듈은
     out 폴더의 문서 목록, 정답(labels), 분류기(labels/classifiers)를 읽기만 하고 고치지 않는다.
@@ -298,6 +301,7 @@ class Mark:
     rows: List[tuple]         # 형광 표시할 자리들. 줄의 자리를 알면 줄마다 하나씩, 모르면 덩어리 자리 하나
     exact: bool               # rows가 그 글의 자리를 정확히 가리키는가(False면 덩어리 전체로 대신한 것)
     table: bool = False
+    note: str = ""            # PDF 주석의 메모에 적을 글. 비어 있으면 '검토 필요 · 점수'
 
 
 def _union(rows: List[tuple]) -> tuple:
@@ -348,9 +352,9 @@ def safe_threshold(value) -> float:
     return v
 
 
-def out_stem(ex: Extracted, model_key: str, view: str, stage: str) -> str:
-    """결과 파일 이름의 앞부분. 모델과 크기를 넣어, 여러 조합으로 만든 결과가 서로 덮어쓰지 않게 한다."""
-    return "%s.%s.%s%s.marked" % (ex.path.stem, model_key, VIEW_SHORT[view], "" if stage == "after" else ".기준문장")
+def out_stem(ex: Extracted, which: str) -> str:
+    """결과 파일 이름의 앞부분. which: '분류기'(분류기 출력으로 표시한 사본) | 'LLM'(LLM까지 거친 결과로 표시한 사본)"""
+    return "%s.%s.marked" % (ex.path.stem, which)
 
 
 __all__ = ["Extracted", "Mark", "Scorer", "VIEWS", "VIEW_NAME", "STAGES", "choices", "extract", "pick_marks", "summary",

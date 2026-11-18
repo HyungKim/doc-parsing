@@ -1,4 +1,4 @@
-"""표시하기 화면: 파일을 올리고, 모델·넣는 크기·판단 방법·문턱을 골라 미리 본 뒤, 표시한 파일을 만든다.
+"""표시하기 화면: 파일을 올리고, 최종 모델(분류기 → LLM)로 표시한 사본 두 개와 요약 화면을 만든다. 단계마다 걸린 시간을 함께 보여 준다.
 
 이 PC 안에서만 열리는 작은 웹 서버다(파이썬 기본 기능만 쓴다). 올린 파일은 out/mark/in 에, 결과는 out/mark 에 둔다.
 학습·시험·평가와는 따로 돈다: 정답, 분류기, out 폴더의 문서 목록은 읽기만 한다.
@@ -14,10 +14,13 @@ import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import core, make, times
+from verifying import core as vcore
+from verifying import ollama, prompts
+
+from . import core, final, times
 
 TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8",
          ".csv": "text/csv; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".pdf": "application/pdf",
@@ -25,14 +28,15 @@ TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json; charse
 MAX_UPLOAD = 600 * 1024 * 1024
 
 PAGE = r"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>검토 필요 표시하기</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>검토 필요 표시하기 · 최종 모델</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2330;--mute:#5d6878;--line:#d9dee6;--acc:#1f5fbf;--hl:#fff3a0;--hl-ink:#5a4a00;--hl-edge:#d9a400;--err:#a12626}
-@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2229;--ink:#e6eaf0;--mute:#9aa5b5;--line:#343c48;--acc:#7fb0ff;--hl:#5a4d10;--hl-ink:#ffe98a;--err:#ffb3b3}}
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2330;--mute:#5d6878;--line:#d9dee6;--acc:#1f5fbf;--hl:#fff3a0;--hl-ink:#5a4a00;--hl-edge:#d9a400;--ok:#17803f;--err:#a12626}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2229;--ink:#e6eaf0;--mute:#9aa5b5;--line:#343c48;--acc:#7fb0ff;--hl:#5a4d10;--hl-ink:#ffe98a;--ok:#6fd08f;--err:#ffb3b3}}
 *{box-sizing:border-box}
 body{margin:0;padding:18px 22px 80px;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,"Malgun Gothic","맑은 고딕",sans-serif}
 h1{font-size:21px;margin:0 0 4px}
 h2{font-size:16px;margin:0 0 8px}
+h3{font-size:15px;margin:0 0 4px}
 .sub{color:var(--mute);font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0;max-width:1100px}
 .drop{border:2px dashed var(--line);border-radius:8px;padding:16px;text-align:center;color:var(--mute)}
@@ -44,18 +48,20 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 button{font:inherit;padding:5px 12px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);cursor:pointer}
 button:hover{border-color:var(--acc)}
 button.main{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+button.small{padding:1px 8px;font-size:13px}
 button:disabled{opacity:.5;cursor:default}
 .opt{display:flex;gap:6px 18px;flex-wrap:wrap;margin:2px 0 10px}
+.opt.col{flex-direction:column;gap:4px}
 .opt label{display:flex;gap:6px;align-items:flex-start;cursor:pointer}
 .opt label.off{color:var(--mute);cursor:default}
 .opt small{color:var(--mute);display:block;font-size:12px;line-height:1.4}
 .grp{margin:0 0 4px;font-weight:700;font-size:14px}
 input[type=number]{font:inherit;width:84px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 input[type=range]{width:240px;vertical-align:middle}
-select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 #status{min-height:22px;color:var(--mute);font-size:13px;margin-top:6px}
 #status.err{color:var(--err);font-weight:700}
 .yes{background:var(--hl);color:var(--hl-ink);border-radius:3px;padding:0 4px}
+.ok{color:var(--ok);font-weight:700}.bad{color:var(--err);font-weight:700}
 details{margin:4px 0}
 details summary{cursor:pointer}
 ol.items{list-style:none;margin:6px 0 0;padding:0;max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:6px}
@@ -64,44 +70,77 @@ ol.items li:last-child{border-bottom:0}
 ol.items .pg{flex:0 0 46px;color:var(--mute);font-size:12px;padding-top:2px}
 ol.items .sc{flex:0 0 40px;font-weight:700;font-variant-numeric:tabular-nums}
 ol.items .tx{white-space:pre-wrap;word-break:break-word;min-width:0}
-.res a{font-weight:700}
 .note{color:var(--mute);font-size:13px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 a{color:var(--acc)}
-.tres{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0}
+code{font:13px ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+.flow{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:4px 0 12px}
+.flow .st{flex:1 1 200px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
+.flow .st b{display:block;font-size:14px}
+.flow .st span{display:block;font-size:13px}
+.flow .ar{align-self:center;color:var(--mute);font-size:18px}
+.pbar{height:8px;background:var(--line);border-radius:4px;max-width:520px;margin-top:6px;overflow:hidden}
+.pbar i{display:block;height:8px;background:var(--acc);width:0}
+.res{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}
+.res ul{margin:4px 0;padding-left:20px}
+.res li{margin:2px 0}
+.cnt{font-variant-numeric:tabular-nums}
 /*TIMECSS*/
 </style></head><body class="tm">
-<h1>'검토 필요' 표시하기</h1>
-<p class="sub">학습해 둔 모델로 PDF·PPTX에 점수를 매겨, '예'로 본 글을 표시한 사본을 만듭니다. 정답과 학습 결과는 읽기만 하고 바꾸지 않습니다. 이 PC 안에서만 열리는 화면입니다.</p>
+<h1>'검토 필요' 표시하기 · 최종 모델</h1>
+<p class="sub">PDF·PPTX를 올리면 최종 모델로 '검토 필요(예)'를 가려, <b>분류기 출력으로 표시한 사본</b>과 <b>LLM까지 거친 결과로 표시한 사본</b>을 만들고, 단계마다 걸린 시간을 보여 줍니다.
+자료는 이 PC 밖으로 나가지 않습니다. 정답과 학습 결과는 읽기만 하고 바꾸지 않습니다. 이 PC 안에서만 열리는 화면입니다.</p>
 
 <div class="card"><h2>1. 표시할 파일</h2>
 <div class="drop" id="drop">PDF·PPTX 파일을 여기에 끌어다 놓거나 <button id="pick">파일 고르기</button>
 <input type="file" id="file" multiple accept=".pdf,.pptx" style="display:none"></div>
 <div id="files"></div></div>
 
-<div class="card"><h2>2. 무엇으로 표시할지</h2>
-<div class="grp">모델</div><div class="opt" id="models"></div>
-<div class="grp">넣는 크기</div><div class="opt" id="views"></div>
-<div class="grp">판단 방법</div><div class="opt" id="stages"></div>
-<div class="grp">문턱 <span class="sub" style="font-weight:400">(점수가 이 값 이상이면 '예'로 표시)</span></div>
-<div class="opt" id="thrs"></div>
+<div class="card"><h2>2. 최종 모델 <span class="sub" style="font-weight:400">(5.0에서 정한 조합. 바꿀 수 없고, 아래 세 가지만 고릅니다)</span></h2>
+<div class="flow" id="flow"></div>
+<div class="grp">분류기의 문턱 <span class="sub" style="font-weight:400">(분류기 점수가 이 값 이상인 덩어리를 '예'로 보고 LLM에 넘김)</span></div>
+<div class="opt col" id="thrs"></div>
 <div class="row" style="margin:-4px 0 10px"><input type="range" id="thrbar" min="0" max="1" step="0.01" value="0.5"><span class="sub">지금 문턱 <b id="thrnow">0.50</b></span></div>
 <div class="grp">PDF에 표시하는 방식</div><div class="opt" id="methods"></div>
+<div class="grp">돌리는 방법</div>
+<div class="opt col">
+<label><input type="checkbox" id="usellm" checked><span>LLM 단계까지 돌리기<small>끄면 분류기 출력으로 표시한 사본만 만듭니다(LLM은 덩어리 하나에 몇 초에서 몇십 초가 걸립니다).</small></span></label>
+<label><input type="checkbox" id="fresh"><span>보관해 둔 계산을 쓰지 않고 처음부터 다시 계산하기 <b>(걸린 시간을 재려면 체크)</b><small>한 번 계산한 글의 점수와 LLM의 답은 보관해 두고 다시 씁니다. 그래서 같은 문서를 두 번째로 돌리면 시간이 거의 0으로 나옵니다. 체크하면 보관해 둔 것을 쓰지 않고 모두 새로 계산해서, 처음 보는 문서에 걸리는 시간이 나옵니다.</small></span></label>
+</div>
 <p class="sub" id="titlew"></p></div>
 
 <div class="card"><h2>3. 미리 보기와 만들기</h2>
-<div class="opt"><label><input type="checkbox" id="fresh"><span>보관해 둔 계산을 쓰지 않고 처음부터 다시 계산하기 <b>(걸린 시간을 재려면 체크)</b><small>한 번 계산한 글의 점수는 보관해 두고 다시 씁니다. 그래서 학습에 쓴 문서나 두 번째로 돌리는 문서는 분류기 시간이 거의 0으로 나옵니다. 체크하면 모두 새로 계산해서, 처음 보는 문서에 걸리는 시간이 나옵니다.</small></span></label></div>
-<div class="row"><button id="score">점수 매기고 미리 보기</button><button id="make" class="main">표시한 파일 만들기</button><button id="folder">결과 폴더 열기</button><button id="timelog">걸린 시간 기록 열기</button></div>
+<div class="row"><button id="score">분류기 점수 미리 보기</button><button id="make" class="main">표시한 파일 만들기</button><button id="stop" disabled>멈추기</button>
+<button id="folder">결과 폴더 열기</button><button id="timelog">걸린 시간 기록 열기</button></div>
+<p class="sub">'멈추기'를 누르면 LLM에 묻고 있던 덩어리도 기다리지 않고 바로 끊습니다. 받은 답은 보관되어 있어서, 다시 만들면 이어서 받습니다.</p>
+<div class="pbar" id="pbar" style="display:none"><i></i></div>
 <div id="status"></div><div id="preview"></div><div id="results"></div></div>
 
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let S={files:[],ch:null,preview:null,pkey:"",busy:false,sel:{model:"",view:"line",stage:"after",thrmode:"half",thr:0.5,method:"annot"}};
-const METHODS=[["annot","형광펜 주석","PDF 프로그램에서 하나씩 지울 수 있고, 메모에 점수가 들어갑니다"],["paint","쪽에 직접 칠하기","주석을 보여 주지 않는 프로그램이나 인쇄에서도 보입니다. 지울 수 없습니다"]];
-const VIEWNOTE={block:"덩어리의 글 전체를 한 번에 넣어 덩어리에 표시",agg:"줄마다 넣고, 가장 높은 줄의 점수로 덩어리에 표시",line:"줄마다 넣어 줄에 표시"};
+let S={files:[],fin:null,preview:null,busy:false,running:false,sel:{thrmode:null,thr:0.5,method:"annot"}};
+const METHODS=[["annot","형광펜 주석","PDF 프로그램에서 하나씩 지울 수 있고, 메모에 점수와 LLM의 답이 들어갑니다"],["paint","쪽에 직접 칠하기","주석을 보여 주지 않는 프로그램이나 인쇄에서도 보입니다. 지울 수 없습니다"]];
+const STAGES=[["extract","글 뽑기"],["classify","분류기"],["llm","LLM"],["write","파일 만들기"]];
 
-const TSTAGES=[["extract","글 뽑기",0],["classify","분류기",1],["write","파일 만들기",3]];
+async function post(path,body){
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Mark":"1"},body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({ok:false,error:"응답을 읽지 못했습니다"}));
+  if(!r.ok||j.ok===false)throw new Error(j.error||"실패했습니다");
+  return j;
+}
+function say(text,err){const s=$("status");s.textContent=text||"";s.className=err?"err":"";}
+function lock(on){S.busy=on;for(const b of document.querySelectorAll("button"))b.disabled=on&&b.id!=="stop";$("stop").disabled=!S.running;}
+let timer=null,ptimer=null;
+function poll(on){
+  if(ptimer){clearInterval(ptimer);ptimer=null;}
+  if(on)ptimer=setInterval(async()=>{try{const j=await (await fetch("/status")).json();if(S.busy&&!S.running&&j.text)say(j.text);}catch(e){}},1000);
+}
+async function busy(fn){
+  if(S.busy)return;lock(true);poll(true);
+  try{await fn();}catch(e){say(e.message,true);}
+  finally{poll(false);if(!S.running)lock(false);}
+}
 function fmt(s){
   if(s==null)return "-";s=Math.max(0,s);
   if(s>0&&s<0.005)return "0.01초 미만";
@@ -113,114 +152,114 @@ function fmt(s){
 }
 function share(part,total){if(total<=0)return "-";const p=100*part/total;return p>0&&p<1?"1% 미만":Math.round(p)+"%";}
 function timeBar(t){
-  const total=TSTAGES.reduce((a,x)=>a+t[x[0]].sec,0);if(total<=0)return "";
-  const cells=TSTAGES.map(x=>t[x[0]].sec>0?`<i class="t${x[2]}" style="flex:${(t[x[0]].sec/total).toFixed(4)} 1 0" title="${x[1]} ${fmt(t[x[0]].sec)} (${share(t[x[0]].sec,total)})"></i>`:"").join("");
-  const key=TSTAGES.map(x=>`<span><i class="t${x[2]}"></i>${x[1]} <b>${fmt(t[x[0]].sec)}</b> (${share(t[x[0]].sec,total)})</span>`).join("")+`<span>합계 <b>${fmt(total)}</b></span>`;
+  const total=STAGES.reduce((a,x)=>a+t[x[0]].sec,0);if(total<=0)return "";
+  const cells=STAGES.map((x,n)=>t[x[0]].sec>0?`<i class="t${n}" style="flex:${(t[x[0]].sec/total).toFixed(4)} 1 0" title="${x[1]} ${fmt(t[x[0]].sec)} (${share(t[x[0]].sec,total)})"></i>`:"").join("");
+  const key=STAGES.map((x,n)=>`<span><i class="t${n}"></i>${x[1]} <b>${fmt(t[x[0]].sec)}</b> (${share(t[x[0]].sec,total)})</span>`).join("")+`<span>합계 <b>${fmt(total)}</b></span>`;
   return `<div class="tbar2" role="img" aria-label="단계별 걸린 시간">${cells}</div><div class="tkey">${key}</div>`;
 }
-async function post(path,body){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Mark":"1"},body:JSON.stringify(body||{})});
-  const j=await r.json().catch(()=>({ok:false,error:"응답을 읽지 못했습니다"}));
-  if(!r.ok||j.ok===false)throw new Error(j.error||"실패했습니다");
-  return j;
+async function load(){
+  const j=await (await fetch("/state")).json();S.files=j.files;S.fin=j.final;
+  if(S.sel.thrmode===null)S.sel.thrmode=S.fin.threshold.saved!=null?"saved":"half";
+  fix();render();
+  if(j.run.running&&!S.running){S.running=true;lock(true);watch();}
 }
-function say(text,err){const s=$("status");s.textContent=text||"";s.className=err?"err":"";}
-let timer=null;
-function watch(on){
-  if(timer){clearInterval(timer);timer=null;}
-  if(on)timer=setInterval(async()=>{try{const j=await (await fetch("/status")).json();if(S.busy&&j.text)say(j.text);}catch(e){}},1000);
-}
-async function busy(fn){
-  if(S.busy)return;S.busy=true;watch(true);
-  for(const b of document.querySelectorAll("button"))b.disabled=true;
-  try{await fn();}catch(e){say(e.message,true);}
-  finally{S.busy=false;watch(false);for(const b of document.querySelectorAll("button"))b.disabled=false;}
-}
-async function load(){const j=await (await fetch("/state")).json();S.files=j.files;S.ch=j.choices;if(!S.sel.model){const m=S.ch.models.find(m=>m.ready&&(m.trained.line||m.trained.block))||S.ch.models.find(m=>m.ready);S.sel.model=m?m.key:"";}fix();render();}
-function model(){return S.ch.models.find(m=>m.key===S.sel.model);}
-function unit(){return S.sel.view==="block"?"block":"line";}
-function saved(){const m=model();const t=m&&m.thresholds&&m.thresholds[S.sel.view];return t&&t[S.sel.stage]!=null?t[S.sel.stage]:null;}
 function fix(){
-  const m=model();
-  if(m&&S.sel.stage==="after"&&!m.trained[unit()])S.sel.stage="before";
-  if(S.sel.thrmode==="saved"){const v=saved();if(v==null)S.sel.thrmode="half";else S.sel.thr=v;}
+  const sv=S.fin.threshold.saved;
+  if(S.sel.thrmode==="saved"){if(sv==null)S.sel.thrmode="half";else S.sel.thr=sv;}
   if(S.sel.thrmode==="half")S.sel.thr=0.5;
 }
-function key(){return [S.sel.model,S.sel.view,S.sel.stage].join("|");}
 function radio(name,value,cur,label,note,off){
   return `<label class="${off?"off":""}"><input type="radio" name="${name}" value="${esc(value)}" ${value===cur?"checked":""} ${off?"disabled":""}><span>${label}${note?`<small>${note}</small>`:""}</span></label>`;
 }
+function thrNote(){const pct=Math.round((S.fin.threshold.target||0.9)*100);return S.sel.thrmode==="saved"?`지난 학습(${S.fin.threshold.made})에서 '예'의 ${pct}%를 찾던 문턱`:S.sel.thrmode==="half"?"0.5 (예와 아니오 가능성이 반반인 자리)":"직접 정한 문턱";}
 function render(){
-  // 파일
   if(!S.files.length)$("files").innerHTML=`<p class="sub">아직 올린 파일이 없습니다.</p>`;
-  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">덩어리</th><th class="n">줄</th><th class="n">글 뽑는 데</th><th>상태</th><th></th></tr>`+S.files.map(f=>
-    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":f.blocks}</td><td class="n">${f.error?"-":f.lines}</td><td class="n">${f.error?"-":fmt(f.seconds)}</td>`+
-    `<td>${f.error?`<span style="color:var(--err)">${esc(f.error)}</span>`:(f.blocks?"글을 뽑았습니다":"뽑힌 글이 없습니다")}</td><td><button data-rm="${esc(f.name)}">빼기</button></td></tr>`).join("")+`</table>`;
-  // 모델
-  $("models").innerHTML=S.ch.models.map(m=>{
-    const t=["block","line"].map(u=>m.trained[u]?`${u==="block"?"덩어리":"줄"} 분류기: ${esc(m.trained[u].trained)} 학습 (예 ${m.trained[u].yes}, 아니오 ${m.trained[u].no})`:`${u==="block"?"덩어리":"줄"} 분류기: 없음`).join("<br>");
-    return radio("model",m.key,S.sel.model,esc(m.label),m.ready?t:"모델 파일이 없습니다 (download_screen.bat)",!m.ready);}).join("");
-  $("views").innerHTML=S.ch.views.map(v=>radio("view",v.key,S.sel.view,esc(v.label),VIEWNOTE[v.key])).join("");
-  const m=model(),has=m&&m.trained[unit()];
-  $("stages").innerHTML=radio("stage","after",S.sel.stage,"학습한 분류기",has?`${esc(has.trained)}에 학습한 것`:"이 모델·크기로 학습한 분류기가 아직 없습니다 (label.bat 에서 학습)",!has)+
-    radio("stage","before",S.sel.stage,"기준 문장 (학습 전)","screen_sentences.txt 의 문장과 견줘 판단");
-  const sv=saved(),pct=S.ch.target?Math.round(S.ch.target*100):90;
-  $("thrs").innerHTML=radio("thrmode","half",S.sel.thrmode,"0.5","예와 아니오 가능성이 반반인 자리")+
-    radio("thrmode","saved",S.sel.thrmode,sv!=null?`지난 학습에서 '예'의 ${pct}%를 찾던 문턱 (${sv.toFixed(2)})`:`지난 학습에서 '예'의 ${pct}%를 찾던 문턱`,
-      sv!=null?`${esc(S.ch.thresholds_made)}에 학습용 문서의 정답으로 구한 값. 덜 놓치는 쪽`:"이 조합의 값이 없습니다. '학습하고 결과 보기'를 한 번 하면 생깁니다",sv==null)+
+  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">덩어리</th><th class="n">글 뽑는 데</th><th>상태</th><th></th></tr>`+S.files.map(f=>
+    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":f.blocks}</td><td class="n">${f.error?"-":fmt(f.seconds)}</td>`+
+    `<td>${f.error?`<span class="bad">${esc(f.error)}</span>`:(f.blocks?"글을 뽑았습니다":"뽑힌 글이 없습니다")}</td><td><button data-rm="${esc(f.name)}">빼기</button></td></tr>`).join("")+`</table>`;
+  const c=S.fin.classifier,l=S.fin.llm;
+  let cs=!c.ready?`<span class="bad">모델 파일이 없습니다</span> (install_screen.bat 또는 download_screen.bat)`:
+    (c.trained?`<span class="ok">준비됨</span> · ${esc(c.trained.trained)}에 학습 (정답 예 ${c.trained.yes}, 아니오 ${c.trained.no})`:`<span class="bad">덩어리 분류기가 아직 없습니다</span> (label.bat 에서 '학습하고 결과 보기')`);
+  let ls=!l.ok?`<span class="bad">Ollama에 연결하지 못했습니다</span> ${esc(l.error||"")}`:
+    (!l.pulled?`<span class="bad">${esc(l.name)} 모델을 아직 받지 않았습니다</span> (verify.bat 화면의 '받기' 또는 <code>ollama pull ${esc(l.name)}</code>)`:
+     (l.prompt_error?`<span class="bad">프롬프트 파일에 문제가 있습니다</span> ${esc(l.prompt_error)}`:`<span class="ok">준비됨</span> · Ollama ${esc(l.version)} · 이 PC 안(127.0.0.1)에서만 돕니다`));
+  $("flow").innerHTML=`<div class="st"><b>① 글 뽑기</b><span>PDF·PPTX → 덩어리</span><span class="sub">1단계와 같은 규칙</span></div><div class="ar">→</div>`+
+    `<div class="st"><b>② 분류기</b><span>${esc(c.label)} · 덩어리</span><span class="sub">${cs}</span></div><div class="ar">→</div>`+
+    `<div class="st"><b>③ LLM</b><span>${esc(l.name)} · 프롬프트 안 ${esc(l.variant)}${l.variant_name?" "+esc(l.variant_name):""} · 생각 모드 ${l.think?"켬":"끔"}</span><span class="sub">${ls}</span></div><div class="ar">→</div>`+
+    `<div class="st"><b>④ 표시한 파일</b><span>분류기 표시 사본 · LLM 표시 사본 · 요약 화면</span><span class="sub">out\\mark 폴더에 만듭니다</span></div>`;
+  const sv=S.fin.threshold.saved,pct=Math.round((S.fin.threshold.target||0.9)*100);
+  $("thrs").innerHTML=radio("thrmode","saved",S.sel.thrmode,(sv!=null?`지난 학습에서 '예'의 ${pct}%를 찾던 문턱 (${sv.toFixed(2)})`:`지난 학습에서 '예'의 ${pct}%를 찾던 문턱`)+" — 기본",
+      sv!=null?`${esc(S.fin.threshold.made)}에 학습용 문서의 정답으로 구한 값. 분류기는 넓게 잡고 LLM이 덜어 내도록, 덜 놓치는 쪽입니다`:"이 값이 없습니다. label.bat 에서 '학습하고 결과 보기'를 한 번 하면 생깁니다. 그때까지는 0.5를 씁니다",sv==null)+
+    radio("thrmode","half",S.sel.thrmode,"0.5","예와 아니오 가능성이 반반인 자리. 분류기가 '예'로 보는 덩어리가 줄어 LLM 시간이 줄지만, 놓치는 '예'가 늘 수 있습니다")+
     `<label><input type="radio" name="thrmode" value="custom" ${S.sel.thrmode==="custom"?"checked":""}><span>직접 정하기 <input type="number" id="thrnum" min="0" max="1" step="0.01" value="${S.sel.thr.toFixed(2)}"></span></label>`;
   $("thrbar").value=S.sel.thr;$("thrnow").textContent=S.sel.thr.toFixed(2);
   $("methods").innerHTML=METHODS.map(x=>radio("method",x[0],S.sel.method,x[1],x[2])).join("");
-  $("titlew").textContent=S.ch.title_weight?`쪽 제목 반영: 켜짐 (비율 ${S.ch.title_weight}). 걸러내기 설정(screen_options.txt)을 그대로 따릅니다.`:"쪽 제목 반영: 꺼짐 (걸러내기 설정을 그대로 따릅니다)";
+  $("titlew").textContent=S.fin.title_weight?`쪽 제목 반영: 켜짐 (비율 ${S.fin.title_weight}). 걸러내기 설정(screen_options.txt)을 그대로 따릅니다.`:"쪽 제목 반영: 꺼짐 (걸러내기 설정을 그대로 따릅니다)";
   drawPreview();
 }
 function drawPreview(){
   const p=S.preview;
-  if(!p||S.pkey!==key()){$("preview").innerHTML=S.files.length?`<p class="sub">'점수 매기고 미리 보기'를 누르면 지금 고른 조합으로 몇 개가 '예'가 되는지 보여 줍니다.</p>`:"";return;}
-  const byLine=S.sel.view==="line",thr=S.sel.thr,word=byLine?"줄":"덩어리";
-  let h=`<table><tr><th>파일</th><th class="n">'예'로 볼 ${word}</th><th class="n">전체</th><th class="n">비율</th></tr>`,lists="";
+  if(!p){$("preview").innerHTML=S.files.length?`<p class="sub">'분류기 점수 미리 보기'를 누르면 지금 문턱에서 몇 개가 분류기의 '예'가 되는지(= LLM에 몇 개를 물어야 하는지) 보여 줍니다. 건너뛰고 바로 만들어도 됩니다.</p>`:"";return;}
+  const thr=S.sel.thr;
+  let h=`<table><tr><th>파일</th><th class="n">분류기가 '예'로 볼 덩어리 (LLM에 물을 수)</th><th class="n">전체</th><th class="n">비율</th></tr>`,lists="";
   for(const f of p.files){
-    if(f.error){h+=`<tr><td>${esc(f.name)}</td><td colspan="3" style="color:var(--err)">${esc(f.error)}</td></tr>`;continue;}
-    const all=[];
-    for(const b of f.items){
-      if(byLine){for(const l of (b.lines||[]))if(l.score!=null)all.push({page:b.page,score:l.score,text:l.text});}
-      else if(b.score!=null)all.push({page:b.page,score:b.score,text:b.text});
-    }
-    const yes=all.filter(x=>x.score>=thr);
+    if(f.error){h+=`<tr><td>${esc(f.name)}</td><td colspan="3" class="bad">${esc(f.error)}</td></tr>`;continue;}
+    const all=f.items.filter(b=>b.score!=null),yes=all.filter(x=>x.score>=thr);
     h+=`<tr><td>${esc(f.name)}</td><td class="n"><b class="yes">${yes.length}</b></td><td class="n">${all.length}</td><td class="n">${all.length?Math.round(100*yes.length/all.length):0}%</td></tr>`;
-    lists+=`<details><summary>${esc(f.name)}: '예'로 볼 ${word} ${yes.length}개 보기</summary><ol class="items">`+
+    lists+=`<details><summary>${esc(f.name)}: 분류기가 '예'로 볼 덩어리 ${yes.length}개 보기</summary><ol class="items">`+
       (yes.length?yes.slice(0,300).map(x=>`<li><span class="pg">${x.page}쪽</span><span class="sc">${x.score.toFixed(2)}</span><span class="tx">${esc(x.text)}</span></li>`).join(""):`<li class="sub">문턱 이상인 것이 없습니다.</li>`)+
       (yes.length>300?`<li class="sub">… 나머지 ${yes.length-300}개는 요약 화면에서 볼 수 있습니다.</li>`:"")+`</ol></details>`;
   }
   $("preview").innerHTML=h+`</table>`+lists+`<p class="sub">문턱을 움직이면 위 숫자가 바로 바뀝니다. 정했으면 '표시한 파일 만들기'를 누르세요.</p>`;
 }
-function body(){return {model:S.sel.model,view:S.sel.view,stage:S.sel.stage};}
+function link(name){return `<a href="/out/mark/${encodeURIComponent(name)}" target="_blank">${esc(name)}</a>`;}
+function showResults(j){
+  let h=`<h2 style="margin-top:14px">만든 결과</h2>`;
+  for(const r of j.results){
+    if(r.error){h+=`<div class="res"><b>${esc(r.name)}</b> <span class="bad">${esc(r.error)}</span></div>`;continue;}
+    const c=r.counts,f=r.files;
+    h+=`<div class="res"><h3>${esc(r.name)}</h3>`+
+      `<div class="cnt">덩어리 ${c.blocks}개 → 분류기 '예' <b class="yes">${c.passed}개</b>`+(c.kept!=null?` → LLM까지 거쳐 남은 것 <b class="yes">${c.kept}개</b> (LLM '예' ${c.llm_yes} · '아니오' ${c.llm_no}${c.llm_unknown?" · 읽지 못한 답 "+c.llm_unknown:""})`:"")+`</div>`+
+      (r.llm.why?`<div class="${r.llm.stopped||r.llm.error?"bad":"note"}">${esc(r.llm.why)}</div>`:"")+
+      `<ul><li>① 분류기 출력으로 표시한 사본: ${f.classifier?link(f.classifier)+` <button class="small" data-open="${esc(f.classifier)}">기본 프로그램으로 열기</button>`:"만들지 않음"}</li>`+
+      `<li>② LLM까지 거친 결과로 표시한 사본: ${f.llm?link(f.llm)+` <button class="small" data-open="${esc(f.llm)}">기본 프로그램으로 열기</button>`:"만들지 않음"}</li>`+
+      `<li>요약 화면(두 결과를 나란히, 단계별 시간 표): <a href="/out/mark/${encodeURIComponent(f.page)}" target="_blank"><b>열기</b></a></li></ul>`+
+      `<div class="grp" style="margin-top:6px">단계마다 걸린 시간</div>`+timeBar(r.timing)+
+      (r.timing.llm.mean!=null?`<div class="note">LLM: 덩어리 ${r.timing.llm.asked}개 · 하나에 평균 ${fmt(r.timing.llm.mean)}${r.timing.llm.reused?` · 보관해 둔 답 ${r.timing.llm.reused}개를 다시 써서 그만큼 짧게 나왔습니다`:""}</div>`:"")+
+      (r.timing.classify.reused?`<div class="note">분류기: 보관해 둔 계산 ${r.timing.classify.reused}개를 다시 써서 그만큼 짧게 나왔습니다</div>`:"")+
+      (r.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("")+`</div>`;
+  }
+  h+=`<p class="sub">결과는 <code>${esc(j.folder)}</code> 에 있습니다. 실행마다의 시간은 '걸린 시간 기록'에 쌓입니다.</p>`;
+  $("results").innerHTML=h;
+}
+function watch(){
+  if(timer)clearInterval(timer);
+  $("pbar").style.display="block";
+  timer=setInterval(async()=>{
+    let j;try{j=await (await fetch("/status")).json();}catch(e){return;}
+    if(j.text)say(j.text,false);
+    $("pbar").firstChild.style.width=(j.total?Math.round(100*j.done/j.total):0)+"%";
+    if(!j.running){
+      clearInterval(timer);timer=null;S.running=false;lock(false);$("pbar").style.display="none";
+      if(j.results&&j.results.length)showResults(j);
+      if(j.error)say(j.error,true);else say(j.stopped?"멈췄습니다. 그때까지의 결과를 만들었습니다.":"만들었습니다.");
+      load().catch(()=>{});
+    }
+  },1000);
+}
 async function doScore(){
   if(!S.files.length)throw new Error("먼저 파일을 올려 주세요.");
-  if(!S.sel.model)throw new Error("쓸 수 있는 모델이 없습니다. install_screen.bat 과 download_screen.bat 을 확인해 주세요.");
-  say("점수를 매기는 중입니다. 처음 보는 글은 시간이 걸립니다…");
-  const j=await post("/score",body());S.preview=j;S.pkey=key();say(j.note||"");drawPreview();
+  say("분류기 점수를 매기는 중입니다. 처음 보는 글은 시간이 걸립니다…");
+  const j=await post("/score",{});S.preview=j;say(j.note||"");drawPreview();
 }
 $("score").onclick=()=>busy(doScore);
 $("make").onclick=()=>busy(async()=>{
-  const fresh=$("fresh").checked;
-  if(!fresh&&(!S.preview||S.pkey!==key()))await doScore();
-  if(fresh&&!S.files.length)throw new Error("먼저 파일을 올려 주세요.");
-  say(fresh?"보관해 둔 계산을 쓰지 않고 처음부터 계산해 표시하는 중입니다…":"표시한 파일을 만드는 중입니다…");
-  const note=S.sel.thrmode==="saved"?`지난 학습에서 '예'의 ${S.ch.target?Math.round(S.ch.target*100):90}%를 찾던 문턱`:"";
-  const j=await post("/make",Object.assign(body(),{threshold:S.sel.thr,method:S.sel.method,note:note,fresh:fresh}));
-  $("results").innerHTML=`<h2 style="margin-top:14px">만든 결과</h2><table class="res"><tr><th>파일</th><th class="n">'예'</th><th>표시한 사본</th><th>요약 화면</th></tr>`+j.results.map(r=>
-    r.error?`<tr><td>${esc(r.name)}</td><td colspan="3" style="color:var(--err)">${esc(r.error)}</td></tr>`:
-    `<tr><td>${esc(r.name)}</td><td class="n">${r.yes} / ${r.total}</td><td>${r.marked?`<a href="/out/mark/${encodeURIComponent(r.marked)}" target="_blank">${esc(r.marked)}</a> <button data-open="${esc(r.marked)}">기본 프로그램으로 열기</button>`:"-"}</td>`+
-    `<td><a href="/out/mark/${encodeURIComponent(r.page)}" target="_blank">열기</a>${(r.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("")}</td></tr>`).join("")+
-    `</table><p class="sub">결과는 <code>${esc(j.folder)}</code> 에 있습니다. 모델이나 크기를 바꿔 다시 만들면 다른 이름으로 따로 쌓여서 서로 견줘 볼 수 있습니다.</p>`+
-    `<h2 style="margin-top:14px">단계마다 걸린 시간</h2>`+j.results.filter(r=>!r.error&&r.timing).map(r=>{const c=r.timing.classify;
-      return `<div class="tres"><b>${esc(r.name)}</b>`+timeBar(r.timing)+
-        (c.reused?`<div class="note">분류기: 보관해 둔 계산 ${c.reused}개를 다시 써서 그만큼 짧게 나왔습니다. 처음부터 재려면 위의 '처음부터 다시 계산하기'에 체크하고 다시 만드세요.</div>`:
-          (c["new"]?`<div class="note">분류기: 글 ${c["new"]}개를 새로 계산 · 모델을 불러오는 데 ${fmt(Math.max(0,c.sec-c.compute))}, 점수 계산에 ${fmt(c.compute)}</div>`:""))+`</div>`;}).join("")+
-    `<p class="sub">막대에서 칸의 너비가 그 단계에 걸린 시간에 비례합니다. 표시하기에는 LLM 단계가 없습니다(LLM에 걸리는 시간은 verify.bat 결과 화면에 나옵니다). 자세한 표는 요약 화면에, 실행마다의 기록은 '걸린 시간 기록'에 있습니다.</p>`;
-  say("만들었습니다.");
+  if(!S.files.length)throw new Error("먼저 파일을 올려 주세요.");
+  $("results").innerHTML="";say("시작하는 중입니다…");
+  await post("/make",{threshold:S.sel.thr,note:thrNote(),method:S.sel.method,llm:$("usellm").checked,fresh:$("fresh").checked});
+  S.running=true;lock(true);watch();
 });
+$("stop").onclick=async()=>{try{$("stop").disabled=true;say("멈추는 중입니다…");await post("/stop",{});}catch(e){say(e.message,true);}};
 $("folder").onclick=()=>busy(async()=>{await post("/open",{});say("");});
 $("timelog").onclick=()=>window.open("/out/mark/times.html","_blank");
 document.addEventListener("click",e=>{
@@ -230,7 +269,7 @@ document.addEventListener("click",e=>{
 });
 document.addEventListener("change",e=>{
   const t=e.target;
-  if(t.name==="model"||t.name==="view"||t.name==="stage"||t.name==="method"||t.name==="thrmode"){S.sel[t.name]=t.value;fix();render();}
+  if(t.name==="method"||t.name==="thrmode"){S.sel[t.name]=t.value;fix();render();}
   if(t.id==="thrnum"){const v=parseFloat(t.value);if(!isNaN(v)){S.sel.thrmode="custom";S.sel.thr=Math.min(1,Math.max(0,v));render();}}
 });
 $("thrbar").addEventListener("input",e=>{S.sel.thrmode="custom";S.sel.thr=parseFloat(e.target.value);const n=$("thrnum");if(n)n.value=S.sel.thr.toFixed(2);
@@ -258,21 +297,35 @@ load().catch(e=>say(e.message,true));
 
 
 class App:
-    def __init__(self, cfg, files: List[Path]):
+    def __init__(self, cfg, files: List[Path], prompts_file: Path):
         self.cfg = cfg
+        self.prompts_file = Path(prompts_file)
         self.scorer = core.Scorer(cfg)
         self.lock = threading.RLock()               # 무거운 일(글 뽑기, 점수 매기기, 만들기)은 한 번에 하나만
         self.docs: Dict[str, core.Extracted] = {}   # 파일 이름 → 뽑은 것
         self.errors: Dict[str, str] = {}
         self.order: List[str] = []
-        self.scores: Dict[tuple, dict] = {}         # (파일 이름, 모델, 크기, 판단 방법) → 점수
+        self.scores: Dict[str, dict] = {}           # 파일 이름 → 분류기 점수
         self.status = ""
-        self.in_dir = make.mark_dir(cfg) / "in"
+        self.running = False                        # 만들기를 돌리는 중인가
+        self.error = ""
+        self.results: List[dict] = []
+        self.stopped = False
+        self.done = 0
+        self.total = 0
+        self.stop = vcore.Stop()                    # 멈추기: LLM에 묻고 있던 요청도 바로 끊는다
+        self._seen = 0
+        self.in_dir = final.mark_dir(cfg) / "in"
+        self.first = ollama.ensure_running(self.log)
         for f in files:
             self.add(Path(f))
 
     def log(self, msg: str) -> None:
         self.status = msg.strip()
+        if "번째 덩어리" in msg:                    # 덩어리마다의 진행 줄은 창에 열 번에 한 번만 찍는다
+            self._seen += 1
+            if self._seen % 10 != 1:
+                return
         print(msg, flush=True)
 
     def add(self, path: Path) -> None:
@@ -280,8 +333,7 @@ class App:
         name = path.name
         with self.lock:
             self.log("글을 뽑는 중: %s" % name)
-            for k in [k for k in self.scores if k[0] == name]:
-                del self.scores[k]
+            self.scores.pop(name, None)
             self.docs.pop(name, None)
             self.errors.pop(name, None)
             if name not in self.order:
@@ -294,13 +346,38 @@ class App:
             self.status = ""
 
     def remove(self, name: str) -> dict:
+        if self.running:
+            raise ValueError("지금 만드는 중입니다. 끝난 뒤에 해 주세요.")
         with self.lock:
             self.docs.pop(name, None)
             self.errors.pop(name, None)
             self.order = [n for n in self.order if n != name]
-            for k in [k for k in self.scores if k[0] == name]:
-                del self.scores[k]
+            self.scores.pop(name, None)
         return {"ok": True}
+
+    # ------------------------------------------------------------ 상태
+    def _final(self) -> dict:
+        """최종 모델의 구성과 지금 쓸 수 있는지."""
+        cfg = self.cfg
+        ch = core.choices(cfg)
+        m = next((x for x in ch["models"] if x["key"] == final.FINAL["classifier"]), None) or {"label": final.FINAL["classifier"], "ready": False, "trained": {}}
+        name, key = final.FINAL["llm"], final.FINAL["variant"]
+        llm = {"name": name, "think": False, "variant": key, "variant_name": "", "ok": False, "pulled": False, "version": "",
+               "error": "", "prompt_error": ""}
+        try:
+            llm["version"] = ollama.version()
+            llm["pulled"] = ollama.find_model(name, ollama.models()) is not None
+            llm["ok"] = True
+        except ollama.OllamaError as exc:
+            llm["error"] = str(exc)
+        try:
+            _, v = prompts.load(self.prompts_file, key)
+            llm["variant_name"] = v.name
+        except ValueError as exc:
+            llm["prompt_error"] = str(exc)
+        return {"classifier": {"label": m["label"], "ready": bool(m.get("ready")), "trained": (m.get("trained") or {}).get(final.VIEW)},
+                "llm": llm, "title_weight": float(cfg.title_weight or 0.0),
+                "threshold": {"saved": final.saved_threshold(cfg), "made": ch.get("thresholds_made", ""), "target": ch.get("target") or 0.9}}
 
     def state(self) -> dict:
         files = []
@@ -310,17 +387,25 @@ class App:
             if ex is not None:
                 item.update(ex.counts, kind=ex.kind, seconds=round(ex.seconds, 3))
             files.append(item)
-        return {"ok": True, "files": files, "choices": core.choices(self.cfg)}
+        return {"ok": True, "files": files, "final": self._final(), "run": {"running": self.running}}
 
-    def _scores(self, ex: core.Extracted, model: str, view: str, stage: str, fresh: bool = False) -> dict:
-        """fresh: 보관해 둔 계산을 쓰지 않고 다시 계산한다(걸린 시간을 잴 때)."""
-        key = (ex.name, model, view, stage)
-        if fresh or key not in self.scores:
-            self.scores[key] = self.scorer.score(ex, model, view, stage, self.log, fresh)
-        return self.scores[key]
+    def progress(self) -> dict:
+        out = {"ok": True, "running": self.running, "text": self.status, "done": self.done, "total": self.total, "error": self.error,
+               "stopped": self.stopped}
+        if not self.running:
+            out.update(results=self.results, folder=str(final.mark_dir(self.cfg).resolve()))
+        return out
+
+    # ------------------------------------------------------------ 분류기 점수
+    def _scores(self, ex: core.Extracted, fresh: bool = False) -> dict:
+        if fresh or ex.name not in self.scores:
+            self.scores[ex.name] = self.scorer.score(ex, final.FINAL["classifier"], final.VIEW, final.STAGE, self.log, fresh)
+        return self.scores[ex.name]
 
     def score(self, body: dict) -> dict:
-        model, view, stage = str(body.get("model", "")), str(body.get("view", "")), str(body.get("stage", ""))
+        """분류기 점수 미리 보기."""
+        if self.running:
+            raise ValueError("지금 만드는 중입니다. 끝난 뒤에 해 주세요.")
         out, new, seconds = [], 0, 0.0
         with self.lock:
             for name in self.order:
@@ -328,57 +413,100 @@ class App:
                 if ex is None:
                     out.append({"name": name, "error": self.errors.get(name, "글이 없습니다")})
                     continue
-                self.log("점수를 매기는 중: %s" % name)
-                fresh = (name, model, view, stage) not in self.scores
-                sc = self._scores(ex, model, view, stage)
-                if fresh:
-                    new, seconds = new + sc["new"], seconds + sc["seconds"]
-                rnd = lambda v: None if v is None else round(v, 4)
-                items = []
-                for b in (ex.doc.blocks if ex.doc else []):
-                    it = {"page": b.page, "text": b.text[:600], "score": rnd(sc["block"].get(b.id))}
-                    if view == "line":
-                        it["lines"] = [{"text": l.text[:600], "score": rnd(sc["line"].get(l.id))} for l in b.lines]
-                    items.append(it)
+                self.log("분류기 점수를 매기는 중: %s" % name)
+                was = name in self.scores
+                sc = self._scores(ex)
+                if not was:
+                    new, seconds = new + sc["new_items"], seconds + sc["wall"]
+                items = [{"page": b.page, "text": b.text[:600], "score": None if sc["block"].get(b.id) is None else round(sc["block"][b.id], 4)}
+                         for b in (ex.doc.blocks if ex.doc else [])]
                 out.append({"name": name, "items": items})
             self.status = ""
-        note = "새로 계산한 글 %d개 · %.0f초" % (new, seconds) if new else "계산해 둔 결과를 다시 썼습니다."
+        note = "새로 계산한 덩어리 %d개 · %s" % (new, times.fmt(seconds)) if new else "계산해 둔 결과를 다시 썼습니다."
         return {"ok": True, "files": out, "note": note}
 
-    def make(self, body: dict) -> dict:
-        model, view, stage = str(body.get("model", "")), str(body.get("view", "")), str(body.get("stage", ""))
+    # ------------------------------------------------------------ 만들기
+    def start(self, body: dict) -> dict:
         threshold = core.safe_threshold(body.get("threshold"))
         method = str(body.get("method") or "annot")
         if method not in ("annot", "paint"):
             raise ValueError("표시 방식을 알 수 없습니다")
-        note = str(body.get("note") or "")[:120]
-        fresh = bool(body.get("fresh"))
-        results = []
+        opts = {"threshold": threshold, "method": method, "note": str(body.get("note") or "")[:120],
+                "llm": bool(body.get("llm", True)), "fresh": bool(body.get("fresh"))}
+        if not self.order:
+            raise ValueError("먼저 파일을 올려 주세요.")
         with self.lock:
-            for name in self.order:
-                ex = self.docs.get(name)
-                if ex is None:
-                    results.append({"name": name, "error": self.errors.get(name, "글이 없습니다")})
-                    continue
-                self.log("표시하는 중: %s" % name)
-                try:
-                    sc = self._scores(ex, model, view, stage, fresh)
-                    res = make.make(self.scorer, ex, model, view, stage, threshold, method, self.log, sc, note, fresh)
-                    results.append(res)
-                    t = res["timing"]
-                    print("  %s: 글 뽑기 %s · 분류기 %s · 파일 만들기 %s · 합계 %s" % (
-                        name, times.fmt(t["extract"]["sec"]), times.fmt(t["classify"]["sec"]), times.fmt(t["write"]["sec"]), times.fmt(t["total"])), flush=True)
-                except ValueError:
-                    raise
-                except Exception as exc:
-                    traceback.print_exc()
-                    results.append({"name": name, "error": "%s: %s" % (type(exc).__name__, str(exc)[:200])})
+            if self.running:
+                raise ValueError("이미 만드는 중입니다.")
+            self.running, self.error, self.results, self.stopped, self.done, self.total = True, "", [], False, 0, 0
+            self.stop.clear()
+        threading.Thread(target=self._run, args=(opts,), daemon=True).start()
+        return {"ok": True}
+
+    def _run(self, opts: dict) -> None:
+        llm = None
+        results: List[dict] = []
+        try:
+            with self.lock:
+                answers = None
+                if opts["llm"]:
+                    self.log("LLM을 준비하는 중…")
+                    llm = final.prepare_llm(self.cfg, self.prompts_file, self.log)
+                    answers = vcore.Answers(final.answers_file(self.cfg))
+
+                def tick(done: int, total: int) -> None:
+                    self.done, self.total = done, total
+                for n, name in enumerate(self.order):
+                    ex = self.docs.get(name)
+                    if ex is None:
+                        results.append({"name": name, "error": self.errors.get(name, "글이 없습니다")})
+                        continue
+                    if self.stop.is_set():
+                        results.append({"name": name, "error": "멈춰서 이 파일은 처리하지 않았습니다."})
+                        continue
+                    self.done, self.total = 0, 0
+                    self.log("표시하는 중 (%d/%d): %s" % (n + 1, len(self.order), name))
+                    try:
+                        sc = self._scores(ex, opts["fresh"])
+                        res = final.run_document(self.scorer, ex, llm, answers, opts["threshold"], opts["note"], opts["method"], self.log,
+                                                 self.stop, opts["fresh"], sc, tick)
+                        results.append(final.public(res))
+                        t = res["timing"]
+                        print("  %s: 덩어리 %d → 분류기 '예' %d%s · 글 뽑기 %s · 분류기 %s · LLM %s · 파일 만들기 %s · 합계 %s" % (
+                            name, res["counts"]["blocks"], res["counts"]["passed"],
+                            "" if res["counts"]["kept"] is None else " → LLM까지 %d" % res["counts"]["kept"],
+                            times.fmt(t["extract"]["sec"]), times.fmt(t["classify"]["sec"]), times.fmt(t["llm"]["sec"]) if t["llm"]["ran"] else "-",
+                            times.fmt(t["write"]["sec"]), times.fmt(t["total"])), flush=True)
+                    except ValueError:
+                        raise
+                    except Exception as exc:
+                        if type(exc).__name__ == "ModelMissing":
+                            raise ValueError(str(exc))
+                        traceback.print_exc()
+                        results.append({"name": name, "error": "%s: %s" % (type(exc).__name__, str(exc)[:200])})
+        except (ValueError, ollama.OllamaError) as exc:
+            self.error = str(exc)
+        except Exception as exc:
+            traceback.print_exc()
+            self.error = "%s: %s" % (type(exc).__name__, exc)
+        finally:
+            if llm is not None:
+                ollama.unload(llm.model["name"])        # 끝나면 메모리를 돌려준다
+            self.results = results
+            self.stopped = self.stop.is_set()
             self.status = ""
-        return {"ok": True, "results": results, "folder": str(make.mark_dir(self.cfg).resolve())}
+            self.running = False
+
+    def halt(self) -> dict:
+        """멈추기. LLM에 묻고 있는 덩어리도 기다리지 않고 끊는다. 그때까지 받은 답은 보관되어 있다."""
+        if self.running:
+            self.status = "멈추는 중입니다…"
+        self.stop.set()
+        return {"ok": True}
 
     def open(self, body: dict) -> dict:
         """결과 폴더나 그 안의 파일을 이 PC의 기본 프로그램으로 연다."""
-        folder = make.mark_dir(self.cfg).resolve()
+        folder = final.mark_dir(self.cfg).resolve()
         folder.mkdir(parents=True, exist_ok=True)
         target = folder
         name = str(body.get("name") or "")
@@ -395,6 +523,8 @@ class App:
         return {"ok": True}
 
     def save_upload(self, name: str, stream, size: int) -> dict:
+        if self.running:
+            raise ValueError("지금 만드는 중입니다. 끝난 뒤에 올려 주세요.")
         name = Path(unquote(name)).name
         if not name or name.startswith("~$") or Path(name).suffix.lower() not in (".pdf", ".pptx"):
             raise ValueError("PDF나 PPTX 파일만 올릴 수 있습니다")
@@ -457,12 +587,12 @@ def make_handler(app: App):
                 if path == "/state":
                     return self._json(200, app.state())
                 if path == "/status":
-                    return self._json(200, {"ok": True, "text": app.status})
+                    return self._json(200, app.progress())
                 if path.startswith("/out/"):
                     target = (out_root / path[len("/out/"):]).resolve()
                     if out_root in target.parents and target.is_file() and target.suffix.lower() in TYPES:
                         return self._send(200, target.read_bytes(), TYPES[target.suffix.lower()])
-                self._send(404, "없는 주소입니다".encode("utf-8"), TYPES[".txt"])
+                self._send(404, "없는 주소입니다. 아직 만든 것이 없으면 먼저 만들어 주세요.".encode("utf-8"), TYPES[".txt"])
             except Exception as exc:
                 traceback.print_exc()
                 self._json(500, {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
@@ -488,25 +618,29 @@ def make_handler(app: App):
                 if parts.path == "/score":
                     return self._json(200, app.score(body))
                 if parts.path == "/make":
-                    return self._json(200, app.make(body))
+                    return self._json(200, app.start(body))
+                if parts.path == "/stop":
+                    return self._json(200, app.halt())
                 if parts.path == "/remove":
                     return self._json(200, app.remove(str(body.get("name") or "")))
                 if parts.path == "/open":
                     return self._json(200, app.open(body))
                 self._json(404, {"ok": False, "error": "없는 주소입니다"})
-            except ValueError as exc:
+            except (ValueError, ollama.OllamaError) as exc:
                 self._json(400, {"ok": False, "error": str(exc)})
             except SystemExit as exc:
                 self._json(400, {"ok": False, "error": str(exc)})
             except Exception as exc:
+                if type(exc).__name__ == "ModelMissing":
+                    return self._json(400, {"ok": False, "error": str(exc)})
                 traceback.print_exc()
                 self._json(500, {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
 
     return Handler
 
 
-def serve(cfg, files: List[Path], port: int = 8775, open_browser: bool = True) -> None:
-    app = App(cfg, files)
+def serve(cfg, files: List[Path], prompts_file: Path, port: int = 8775, open_browser: bool = True) -> None:
+    app = App(cfg, files, prompts_file)
     server = None
     for p in range(port, port + 20):               # 쓰고 있는 번호면 다음 번호로
         try:
@@ -519,7 +653,9 @@ def serve(cfg, files: List[Path], port: int = 8775, open_browser: bool = True) -
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     print("표시하기 화면: %s" % url)
     print("이 PC 안에서만 열립니다. 이 창을 닫으면(또는 Ctrl+C) 끝납니다.")
-    print("결과 폴더: %s" % make.mark_dir(cfg).resolve(), flush=True)
+    if not app.first["ok"]:
+        print("[알림] %s (분류기까지만 만들 수는 있습니다)" % app.first["error"])
+    print("결과 폴더: %s" % final.mark_dir(cfg).resolve(), flush=True)
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

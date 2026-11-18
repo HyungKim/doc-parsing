@@ -1,5 +1,6 @@
-"""검증하기 화면: 분류기, LLM, 프롬프트 안, 돌릴 양을 골라 돌리고 결과 화면을 연다.
+"""검증하기 화면: 최종 모델(분류기 + LLM)을 정답이 붙은 문서로 재 보고 결과 화면을 연다.
 
+5.0부터 조합은 하나로 정해져 있어서(verifying.core.FINAL), 이 화면에서 고르는 것은 분류기의 문턱과 돌릴 양뿐이다.
 이 PC 안에서만 열리는 작은 웹 서버다(파이썬 기본 기능만 쓴다). 결과는 out/verify 에 둔다.
 학습·시험·평가와는 따로 돈다: 정답, 분류기, out 폴더의 문서 목록은 읽기만 한다.
 """
@@ -44,8 +45,9 @@ button:disabled{opacity:.5;cursor:default}
 .opt label{display:flex;gap:6px;align-items:flex-start;cursor:pointer}
 .opt label.off{color:var(--mute);cursor:default}
 .opt small{color:var(--mute);display:block;font-size:12px;line-height:1.4}
-.opt label.sub2{margin:4px 0 2px 26px}
-.grp{margin:0 0 4px;font-weight:700;font-size:14px}
+.grp{margin:8px 0 4px;font-weight:700;font-size:14px}
+.fixed{margin:0 0 6px}
+.fixed small{color:var(--mute);display:block;font-size:13px;line-height:1.5}
 input[type=number],input[type=text]{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 input[type=number]{width:84px}
 #status{min-height:22px;color:var(--mute);font-size:13px;margin-top:8px}
@@ -63,29 +65,26 @@ code{font:13px ui-monospace,Consolas,monospace;background:var(--bg);border:1px s
 .done{font-size:16px;font-weight:700;margin-top:10px}
 </style></head><body>
 <h1>LLM으로 한 번 더 검증하기</h1>
-<p class="sub">분류기가 '검토 필요(예)'로 본 글을 이 PC 안의 LLM에 다시 물어, 얼마나 더 걸러지는지와 시간이 얼마나 걸리는지를 모델·프롬프트별로 견줍니다.
+<p class="sub">분류기가 '검토 필요(예)'로 본 덩어리를 이 PC 안의 LLM에 다시 물어, 정답과 얼마나 맞는지(정밀도 · 재현율 · F1)와 시간이 얼마나 걸리는지를 잽니다.
 자료는 이 PC 밖으로 나가지 않습니다. 정답과 학습 결과는 읽기만 하고 바꾸지 않습니다.</p>
+<p class="sub"><b>5.0부터</b> 조합은 하나로 정해져 있습니다: 분류기 multilingual-e5-small · 넣는 크기 <b>덩어리</b> · LLM <b>qwen3:8b</b> · 프롬프트 안 <b>C 사업 분야</b> · 생각 모드 <b>끔</b>.
+새 문서에 표시하는 일(<code>mark.bat</code>)도 같은 조합으로 돕니다. 이 화면은 그 조합을 정답이 붙은 문서로 재 보는 곳이라, 고르는 것은 문턱과 돌릴 양뿐입니다.</p>
 
 <div class="card"><h2>지금 상태</h2><div id="state" class="sub">확인하는 중…</div></div>
 
-<div class="card"><h2>1. 분류기 <span class="sub" style="font-weight:400">(어느 분류기가 통과시킨 글을 LLM에 넣을지)</span></h2>
-<div class="grp">모델</div><div class="opt" id="models"></div>
-<div class="grp">넣는 크기</div><div class="opt" id="views"></div>
-<div class="grp">문턱 <span class="sub" style="font-weight:400">(분류기 점수가 이 값 이상인 글을 LLM에 넣음)</span></div><div class="opt col" id="thrs"></div></div>
+<div class="card"><h2>1. 분류기 <span class="sub" style="font-weight:400">(분류기가 통과시킨 덩어리를 LLM에 넣습니다)</span></h2>
+<div class="fixed" id="clf"></div>
+<div class="grp">문턱 <span class="sub" style="font-weight:400">(분류기 점수가 이 값 이상인 덩어리를 LLM에 넣음)</span></div><div class="opt col" id="thrs"></div></div>
 
 <div class="card"><h2>2. LLM <span class="sub" style="font-weight:400">(이 PC의 Ollama에 받아 둔 모델)</span></h2>
-<div class="opt col" id="llms"></div>
-<div class="row"><input type="text" id="addname" placeholder="다른 모델 이름" size="30"><button id="add" class="small">목록에 더하기</button></div>
-<p class="sub">모델을 받을 때만 Ollama가 인터넷을 씁니다(나가는 것은 모델 이름뿐입니다). 이름에 cloud가 붙은 모델은 밖의 서버에서 도는 것이라 쓰지 않습니다.</p>
-<p class="sub"><b>생각 모드에 대해</b>: <code>qwen3:4b-instruct</code>(4B)는 생각 모드가 <b>없는</b> 모델이라 늘 바로 답합니다.
-<code>qwen3:8b</code>(8B)는 생각 모드를 켜고 끌 수 있는 모델이고, 기본은 끕니다. 그래서 '켠 것도 함께 돌려 견주기'는 8B에만 나옵니다.
-(이름에 instruct가 없는 <code>qwen3:4b</code>는 늘 생각부터 하는 다른 판이라 쓰지 않습니다.)</p>
-<p class="sub"><b>속도에 대해</b>: Qwen3 4B와 8B는 바뀌지 않는 지시문을 한 번만 읽고 글마다 달라지는 부분만 새로 읽습니다.
-Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 배 느려서 넣지 않았습니다.</p></div>
+<div class="fixed" id="llm"></div>
+<p class="sub">모델을 받을 때만 Ollama가 인터넷을 씁니다(나가는 것은 모델 이름뿐입니다). 이 프로그램은 이 PC 안의 주소로만 묻습니다.</p>
+<p class="sub"><b>생각 모드</b>: <code>qwen3:8b</code>는 생각 모드를 켜고 끌 수 있는 모델이고, 이 프로그램은 늘 <b>끄고</b> 묻습니다(켜면 답하기 전에 풀이를 길게 써서 훨씬 느려집니다).</p></div>
 
-<div class="card"><h2>3. 프롬프트 안</h2>
-<div class="opt col" id="variants"></div>
-<div class="row"><button id="openp" class="small">프롬프트 파일 열기</button><button id="opens" class="small">판단 기준(기준 문장) 파일 열기</button><button id="reload" class="small">고친 내용 다시 읽기</button></div></div>
+<div class="card"><h2>3. 프롬프트</h2>
+<div class="fixed" id="variant"></div>
+<div class="row"><button id="openp" class="small">프롬프트 파일 열기</button><button id="opens" class="small">판단 기준(기준 문장) 파일 열기</button><button id="reload" class="small">고친 내용 다시 읽기</button></div>
+<p class="sub">사업 분야의 글은 프롬프트 파일의 <code>[사업 분야]</code>에서, 판단 기준은 기준 문장 파일에서 가져옵니다. 고치면 그 뒤로는 답을 새로 받습니다.</p></div>
 
 <div class="card"><h2>4. 얼마나 돌릴지</h2>
 <div class="grp">LLM에 넣을 글 수</div><div class="opt" id="samples"></div>
@@ -102,9 +101,8 @@ Qwen3.5는 모델 구조상 글마다 프롬프트 전체를 다시 읽어 몇 �
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let S={st:null,busy:false,running:false,extra:[],sel:{classifier:"",view:"line",thr_mode:"test90",threshold:0.5,llms:null,variants:null,sample:200,with_rejected:false}};
-const VIEWNOTE={block:"덩어리의 글 전체를 분류기에 넣고, 통과한 덩어리를 LLM에 넣음",agg:"줄마다 분류기에 넣어 가장 높은 줄의 점수로 덩어리를 통과시키고, 통과한 덩어리를 LLM에 넣음",line:"줄마다 분류기에 넣고, 통과한 줄을 LLM에 넣음"};
-const SAMPLES=[[50,"50개","빠르게 훑어볼 때"],[100,"100개",""],[200,"200개","기본. 모든 조합을 먼저 견줘 볼 때"],[400,"400개",""],[0,"통과한 글 전부","고른 조합을 제대로 잴 때"]];
+let S={st:null,busy:false,running:false,sel:{thr_mode:"test90",threshold:0.5,sample:200,with_rejected:false,fresh:false}};
+const SAMPLES=[[50,"50개","빠르게 훑어볼 때"],[100,"100개",""],[200,"200개","기본"],[400,"400개",""],[0,"통과한 글 전부","제대로 잴 때 (평가 지표가 어림이 아닌 정확한 값으로 나옵니다)"]];
 async function post(path,body){
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Verify":"1"},body:JSON.stringify(body||{})});
   const j=await r.json().catch(()=>({ok:false,error:"응답을 읽지 못했습니다"}));
@@ -117,28 +115,11 @@ async function busy(fn){if(S.busy)return;lock(true);try{await fn();}catch(e){say
 function radio(name,value,cur,label,note,off){
   return `<label class="${off?"off":""}"><input type="radio" name="${name}" value="${esc(value)}" ${String(value)===String(cur)?"checked":""} ${off?"disabled":""}><span>${label}${note?`<small>${note}</small>`:""}</span></label>`;
 }
-function model(){return S.st.choices.models.find(m=>m.key===S.sel.classifier);}
-function unit(){return S.sel.view==="block"?"block":"line";}
-function saved(){const m=model();const t=m&&m.thresholds&&m.thresholds[S.sel.view];return t&&t.after!=null?t.after:null;}
-function llmlist(){
-  const st=S.st,out=[],seen={};
-  const push=(name,note,think)=>{const k=name.toLowerCase();if(seen[k])return;seen[k]=1;const m=(st.ollama.models||[]).find(x=>x.name.toLowerCase()===k||x.name.toLowerCase()===k+":latest");out.push({name:name,note:note||"",m:m||null,think:m?!!m.thinking:!!think});};
-  for(const o of st.offered)push(o[0],o[1],o[2]);
-  for(const m of (st.ollama.models||[]))if(!m.cloud)push(m.name,"",false);
-  for(const n of S.extra)push(n,"",false);
-  return out;
-}
 async function load(){
   const j=await (await fetch("/state")).json();S.st=j;
-  if(!S.sel.classifier){const m=j.choices.models.find(m=>m.key===j.defaults.classifier&&m.ready)||j.choices.models.find(m=>m.ready&&(m.trained.line||m.trained.block))||j.choices.models[0];S.sel.classifier=m?m.key:"";}
-  if(S.sel.llms===null)S.sel.llms=j.defaults.llms.slice();
-  if(S.sel.variants===null||j.variants.some(v=>S.sel.variants.indexOf(v.key)<0&&!S.known[v.key])){S.sel.variants=j.variants.map(v=>v.key);}
-  S.known={};for(const v of j.variants)S.known[v.key]=1;
-  S.sel.variants=S.sel.variants.filter(k=>S.known[k]);
   render();
   if(j.run.running&&!S.running){S.running=true;lock(true);watch();}
 }
-S.known={};
 function render(){
   const st=S.st,o=st.ollama;
   let h=o.ok?`<span class="ok">Ollama 연결됨</span> (버전 ${esc(o.version)}, 주소 ${esc(o.url)} — 이 PC 자신)`:`<span class="bad">Ollama에 연결하지 못했습니다.</span> ${esc(o.error||"")}`;
@@ -146,36 +127,32 @@ function render(){
   h+=`<br>${esc(st.docs_note)}`;
   if(st.prompt_error)h+=`<br><span class="bad">프롬프트 파일에 문제가 있습니다:</span> ${esc(st.prompt_error)}`;
   $("state").innerHTML=h;
-  $("models").innerHTML=st.choices.models.map(m=>{
-    const t=["block","line"].map(u=>m.trained[u]?`${u==="block"?"덩어리":"줄"} 분류기: ${esc(m.trained[u].trained)} 학습 (예 ${m.trained[u].yes}, 아니오 ${m.trained[u].no})`:`${u==="block"?"덩어리":"줄"} 분류기: 없음`).join("<br>");
-    return radio("classifier",m.key,S.sel.classifier,esc(m.label)+(m.key===st.defaults.classifier?" (기본)":""),m.ready?t:"모델 파일이 없습니다 (download_screen.bat)",!m.ready);}).join("");
-  $("views").innerHTML=st.choices.views.map(v=>radio("view",v.key,S.sel.view,esc(v.label),VIEWNOTE[v.key])).join("");
-  const sv=saved(),pct=Math.round(st.target*100);
+  const c=st.classifier,t=c.trained;
+  $("clf").innerHTML=`<b>${esc(c.label)}</b> · 넣는 크기 <b>${esc(c.view_name)}</b><small>덩어리의 글 전체를 분류기에 넣고, 통과한 덩어리를 LLM에 넣습니다.<br>`+
+    (!c.ready?`<span class="bad">모델 파일이 없습니다.</span> download_screen.bat 을 실행해 주세요.`:
+     t?`덩어리 분류기: ${esc(t.trained)} 학습 (예 ${t.yes}, 아니오 ${t.no})`:`<span class="bad">덩어리 분류기가 없습니다.</span> label.bat 에서 정답을 붙이고 '학습하고 결과 보기'를 먼저 해 주세요.`)+`</small>`;
+  const sv=c.saved,pct=Math.round(st.target*100);
   if(S.sel.thr_mode==="saved"&&sv==null)S.sel.thr_mode="test90";
   $("thrs").innerHTML=radio("thr_mode","test90",S.sel.thr_mode,`시험 문서에서 '예'의 ${pct}%를 찾는 문턱 (기본)`,"걸러내기 비교 화면의 시험 문서 수치와 같은 자리입니다")+
-    radio("thr_mode","saved",S.sel.thr_mode,sv!=null?`지난 학습에서 '예'의 ${pct}%를 찾던 문턱 (${sv.toFixed(2)})`:`지난 학습에서 '예'의 ${pct}%를 찾던 문턱`,sv!=null?"학습용 문서의 정답으로 구해 둔 값":"이 조합의 값이 없습니다. '학습하고 결과 보기'를 한 번 하면 생깁니다",sv==null)+
+    radio("thr_mode","saved",S.sel.thr_mode,sv!=null?`지난 학습에서 '예'의 ${pct}%를 찾던 문턱 (${sv.toFixed(2)})`:`지난 학습에서 '예'의 ${pct}%를 찾던 문턱`,sv!=null?"학습용 문서의 정답으로 구해 둔 값. 표시하기(mark.bat)가 기본으로 쓰는 문턱입니다":"아직 값이 없습니다. '학습하고 결과 보기'를 한 번 하면 생깁니다",sv==null)+
     radio("thr_mode","half",S.sel.thr_mode,"0.5","예와 아니오 가능성이 반반인 자리")+
     `<label><input type="radio" name="thr_mode" value="custom" ${S.sel.thr_mode==="custom"?"checked":""}><span>직접 정하기 <input type="number" id="thrnum" min="0" max="1" step="0.01" value="${S.sel.threshold.toFixed(2)}"></span></label>`;
-  let hinted=false;
-  $("llms").innerHTML=llmlist().map(x=>{
-    const on=S.sel.llms.indexOf(x.name)>=0,m=x.m,tk=x.name+st.think_suffix,ton=S.sel.llms.indexOf(tk)>=0;
-    const info=m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB${m.thinking?" · 생각 모드를 켜고 끌 수 있는 모델 (기본은 끔)":" · 생각 모드가 없는 모델 (바로 답함)"}`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(x.name)}">받기</button>`;
-    let h=`<div><label><input type="checkbox" data-llm="${esc(x.name)}" ${on?"checked":""}><span><b>${esc(x.name)}</b>${x.note?" — "+esc(x.note):""}<small>${info}</small></span></label>`;
-    if(x.think)h+=`<label class="sub2"><input type="checkbox" data-llm="${esc(tk)}" ${ton?"checked":""}><span>${esc(x.name)} — <b>생각 모드를 켠 것</b>도 함께 돌려 견주기<small>${hinted?"위와 같습니다. 매우 느립니다.":"답하기 전에 풀이를 길게 써서 글 하나에 수백 토큰이 더 듭니다. GPU가 없는 PC에서는 글 하나에 몇 분이 걸릴 수 있습니다. 글 수를 50개로, 안을 한두 개로 줄여서 먼저 돌려 보세요. 너무 오래 걸리면 '멈추기'를 누르면 됩니다."}</small></span></label>`;
-    if(x.think)hinted=true;
-    return h+`</div>`;}).join("");
-  $("variants").innerHTML=st.variants.map(v=>`<label><input type="checkbox" data-var="${esc(v.key)}" ${S.sel.variants.indexOf(v.key)>=0?"checked":""}><span><b>${esc(v.key)} ${esc(v.name)}</b> = ${esc(v.parts.join(" + "))}<small>${esc(v.purpose||"")}${v.long?" · 길게 받는 답(느림)":""}</small></span></label>`).join("");
+  const l=st.llm,m=l.model;
+  $("llm").innerHTML=`<b>${esc(l.name)}</b> — ${esc(l.note)}<small>`+
+    (m?`받아 둠 · ${esc(m.params||"")} ${esc(m.quant||"")} · ${(m.size/1e9).toFixed(1)}GB`:`<span class="bad">아직 받지 않았습니다</span> <button class="small" data-pull="${esc(l.name)}">받기</button>`)+`</small>`;
+  const v=st.variant;
+  $("variant").innerHTML=v?`<b>${esc(v.key)} ${esc(v.name)}</b> = ${esc(v.parts.join(" + "))}<small>답은 '예' 또는 '아니오' 한 단어로 받습니다. 결과 화면의 '프롬프트 전문'에서 LLM에 실제로 들어간 글을 볼 수 있습니다.</small>`:
+    `<span class="bad">프롬프트를 읽지 못했습니다.</span><small>${esc(st.prompt_error||"")}</small>`;
   $("samples").innerHTML=SAMPLES.map(x=>radio("sample",x[0],S.sel.sample,x[1],x[2])).join("");
   $("rej").checked=S.sel.with_rejected;$("fresh").checked=!!S.sel.fresh;
 }
 function body(){return Object.assign({},S.sel);}
 function planText(j){
-  const c=j.counts,word=j.unit==="line"?"줄":"덩어리";
-  let h=`<table><tr><th>${j.part==="test"?"시험용 문서":"정답이 붙은 모든 문서"} ${c.docs}개의 정답 붙은 ${word}</th><td class="n">${c.labeled}개 ('예' ${c.yes})</td></tr>`+
+  const c=j.counts;
+  let h=`<table><tr><th>${j.part==="test"?"시험용 문서":"정답이 붙은 모든 문서"} ${c.docs}개의 정답 붙은 덩어리</th><td class="n">${c.labeled}개 ('예' ${c.yes})</td></tr>`+
     `<tr><th>분류기 문턱 ${j.threshold.toFixed(2)} 이상으로 통과</th><td class="n">${c.passed}개 ('예' ${c.passed_yes})</td></tr>`+
-    `<tr><th>LLM에 넣을 글</th><td class="n">${c.chosen}개</td></tr>`+
-    `<tr><th>물어야 하는 횟수 (글 × 안 × LLM)</th><td class="n">${j.total}번</td></tr>`+
-    `<tr><th>이미 받아 둔 답</th><td class="n">${j.total-j.todo}번</td></tr><tr><th>새로 물을 것</th><td class="n"><b>${j.todo}번</b></td></tr></table>`;
+    `<tr><th>LLM에 넣을 글 (물어야 하는 횟수)</th><td class="n">${j.total}개</td></tr>`+
+    `<tr><th>이미 받아 둔 답</th><td class="n">${j.total-j.todo}개</td></tr><tr><th>새로 물을 것</th><td class="n"><b>${j.todo}개</b></td></tr></table>`;
   if(j.part!=="test")h+=`<p class="sub"><span class="bad">주의</span>: 시험용 문서에 '예'와 '아니오' 정답이 모두 있지 않아 정답이 붙은 모든 문서로 잽니다. 분류기가 이미 본 글이 섞여 분류기 쪽 수치가 좋게 나옵니다.</p>`;
   if(j.missing.length)h+=`<p class="sub"><span class="bad">아직 받지 않은 모델</span>: ${esc(j.missing.join(", "))} — 위에서 '받기'를 누르세요.</p>`;
   if(j.est)h+=`<p class="sub">지난번에 잰 시간으로 어림하면 ${esc(j.est)} 걸립니다.</p>`;
@@ -200,8 +177,6 @@ function watch(){
 }
 $("plan").onclick=()=>busy(async()=>{say("분류기 점수를 모으고 세는 중입니다…");const j=await post("/plan",body());$("planbox").innerHTML=planText(j);say("");});
 $("run").onclick=()=>busy(async()=>{
-  if(!S.sel.llms.length)throw new Error("LLM을 하나 이상 골라 주세요.");
-  if(!S.sel.variants.length)throw new Error("프롬프트 안을 하나 이상 골라 주세요.");
   $("donebox").innerHTML="";say("시작하는 중입니다…");
   await post("/run",body());S.running=true;lock(true);watch();
 });
@@ -210,20 +185,16 @@ $("result").onclick=()=>window.open("/out/verify/index.html","_blank");
 $("folder").onclick=()=>busy(async()=>{await post("/open",{what:"folder"});});
 $("openp").onclick=()=>busy(async()=>{await post("/open",{what:"prompts"});say("메모장에서 고친 뒤 저장하고 '고친 내용 다시 읽기'를 누르세요.");});
 $("opens").onclick=()=>busy(async()=>{await post("/open",{what:"sentences"});say("메모장에서 고친 뒤 저장하고 '고친 내용 다시 읽기'를 누르세요. 기준 문장은 걸러내기(학습 전 점수)에도 쓰입니다.");});
-$("reload").onclick=()=>busy(async()=>{S.sel.variants=null;await load();say("다시 읽었습니다.");});
-$("add").onclick=()=>{const n=$("addname").value.trim();if(!n)return;if(/cloud/i.test(n)){say("클라우드 모델은 쓰지 않습니다. 자료가 이 PC 밖으로 나가기 때문입니다.",true);return;}
-  if(S.extra.indexOf(n)<0)S.extra.push(n);if(S.sel.llms.indexOf(n)<0)S.sel.llms.push(n);$("addname").value="";render();};
+$("reload").onclick=()=>busy(async()=>{await load();say("다시 읽었습니다.");});
 document.addEventListener("click",e=>{const t=e.target;
   if(t.dataset&&t.dataset.pull){e.preventDefault();const name=t.dataset.pull;busy(async()=>{say(name+" 을(를) 받기 시작합니다…");await post("/pull",{name:name});S.running=true;lock(true);watch();});}
 });
 document.addEventListener("change",e=>{const t=e.target;
-  if(t.name==="classifier"||t.name==="view"||t.name==="thr_mode"){S.sel[t.name]=t.value;render();}
+  if(t.name==="thr_mode"){S.sel[t.name]=t.value;render();}
   if(t.name==="sample"){S.sel.sample=parseInt(t.value,10);}
   if(t.id==="thrnum"){const v=parseFloat(t.value);if(!isNaN(v)){S.sel.thr_mode="custom";S.sel.threshold=Math.min(1,Math.max(0,v));render();}}
   if(t.id==="rej")S.sel.with_rejected=t.checked;
   if(t.id==="fresh")S.sel.fresh=t.checked;
-  if(t.dataset&&t.dataset.llm){const n=t.dataset.llm,i=S.sel.llms.indexOf(n);if(t.checked&&i<0)S.sel.llms.push(n);if(!t.checked&&i>=0)S.sel.llms.splice(i,1);}
-  if(t.dataset&&t.dataset.var){const n=t.dataset.var,i=S.sel.variants.indexOf(n);if(t.checked&&i<0)S.sel.variants.push(n);if(!t.checked&&i>=0)S.sel.variants.splice(i,1);}
 });
 load().catch(e=>say(e.message,true));
 </script></body></html>
@@ -242,7 +213,7 @@ class App:
         self.done = 0
         self.total = 0
         self.stop = core.Stop()                     # 멈추기: 묻고 있던 요청도 바로 끊는다
-        self._data: dict = {}                       # (분류기, 크기, 파일들의 지문) → 모아 둔 글과 점수
+        self._data: dict = {}                       # (파일들의 지문) → 모아 둔 글과 점수
         self._seen = 0
         self.first = ollama.ensure_running(self.log)
 
@@ -267,10 +238,11 @@ class App:
 
     def state(self) -> dict:
         cfg = self.env.cfg
-        variants, prompt_error = [], ""
+        final = core.FINAL
+        variant, prompt_error = None, ""
         try:
-            _, vs = prompts.load(self.env.prompts_file)
-            variants = [{"key": v.key, "name": v.name, "parts": v.parts, "long": v.long, "purpose": prompts.PURPOSE.get(v.key, "")} for v in vs]
+            _, v = prompts.load(self.env.prompts_file, final["variant"])
+            variant = {"key": v.key, "name": v.name, "parts": v.parts}
         except ValueError as exc:
             prompt_error = str(exc)
         from screening import learn, testdocs
@@ -279,18 +251,23 @@ class App:
         labels = learn.load_labels(cfg.labels)
         wanted = set(testdocs.read_test_docs(cfg.test_docs))
         test = [d for d in docs if d.name in wanted]
-        lines = [l for d in test for b in d.blocks for l in b.lines]
-        yes = sum(1 for l in lines if labels.get(l.key) == 1)
-        no = sum(1 for l in lines if labels.get(l.key) == 0)
+        got = [learn.block_label(b, labels) for d in test for b in d.blocks]
+        yes, no = sum(1 for y in got if y == 1), sum(1 for y in got if y == 0)
         if not docs:
             note = "아직 추출한 문서가 없습니다. run.bat 으로 문서를 먼저 추출해 주세요."
         elif not test:
             note = "시험용 문서가 정해져 있지 않습니다. label.bat 화면에서 '시험용'에 체크해 두면 그 문서로 공정하게 잽니다(지금은 정답이 붙은 모든 문서로 잽니다)."
         else:
-            note = "시험용 문서 %d개 · 정답이 붙은 줄 %d개 ('예' %d, '아니오' %d)" % (len(test), yes + no, yes, no)
-        return {"ok": True, "ollama": self._ollama(), "choices": mcore.choices(cfg), "variants": variants, "prompt_error": prompt_error,
-                "offered": [list(x) for x in core.OFFERED_LLMS], "think_suffix": core.THINK_SUFFIX, "docs_note": note, "target": float(cfg.target),
-                "defaults": {"classifier": core.DEFAULT_CLASSIFIER, "llms": list(core.DEFAULT_LLMS), "sample": core.DEFAULT_SAMPLE},
+            note = "시험용 문서 %d개 · 정답이 붙은 덩어리 %d개 ('예' %d, '아니오' %d)" % (len(test), yes + no, yes, no)
+        models = mcore.choices(cfg)["models"]
+        spec = next((x for x in models if x["key"] == final["classifier"]), None) or {}
+        saved = ((spec.get("thresholds") or {}).get(final["view"]) or {}).get("after")
+        seen = self._ollama()
+        return {"ok": True, "ollama": seen, "variant": variant, "prompt_error": prompt_error, "docs_note": note, "target": float(cfg.target),
+                "classifier": {"label": spec.get("label", final["classifier"]), "view_name": mcore.VIEW_SHORT[final["view"]],
+                               "ready": bool(spec.get("ready")), "trained": (spec.get("trained") or {}).get("block"),
+                               "saved": None if saved is None else float(saved)},
+                "llm": {"name": final["llm"], "note": core.LLM_NOTE, "model": ollama.find_model(final["llm"], seen["models"])},
                 "run": {"running": self.running}}
 
     def progress(self) -> dict:
@@ -299,39 +276,29 @@ class App:
 
     # ------------------------------------------------------------ 고른 것 읽기
     def _setup(self, body: dict) -> core.Setup:
-        view = str(body.get("view") or core.DEFAULT_VIEW)
-        if view not in mcore.VIEW_NAME:
-            raise ValueError("넣는 크기를 알 수 없습니다")
         mode = str(body.get("thr_mode") or "test90")
         if mode not in ("test90", "saved", "half", "custom"):
             raise ValueError("문턱을 정하는 방법을 알 수 없습니다")
-        llms = [str(n).strip() for n in (body.get("llms") or []) if str(n).strip()][:12]
-        for n in llms:
-            if ollama.is_cloud_name(core.split_entry(n)[0]):
-                raise ValueError("'%s' 은(는) 클라우드 모델이라 쓰지 않습니다. 자료가 이 PC 밖으로 나가기 때문입니다." % n)
         try:
             sample = max(0, int(body.get("sample") or 0))
         except (TypeError, ValueError):
             raise ValueError("글 수는 숫자여야 합니다")
-        return core.Setup(classifier=str(body.get("classifier") or core.DEFAULT_CLASSIFIER), view=view, thr_mode=mode,
-                          threshold=mcore.safe_threshold(body.get("threshold")) if mode == "custom" else None, llms=llms,
-                          variants=[str(k) for k in (body.get("variants") or [])][:40], sample=sample,
-                          with_rejected=bool(body.get("with_rejected")), fresh=bool(body.get("fresh")))
+        return core.Setup(thr_mode=mode, threshold=mcore.safe_threshold(body.get("threshold")) if mode == "custom" else None,
+                          sample=sample, with_rejected=bool(body.get("with_rejected")), fresh=bool(body.get("fresh")))
 
     def _signature(self, setup: core.Setup) -> tuple:
         cfg = self.env.cfg
-        unit = "block" if setup.view == "block" else "line"
-        files = [Path(cfg.labels), Path(cfg.test_docs), mcore.classifier_file(cfg.labels, setup.classifier, unit)]
+        files = [Path(cfg.labels), Path(cfg.test_docs), mcore.classifier_file(cfg.labels, core.FINAL["classifier"], "block")]
         units = sorted(Path(cfg.out_dir).glob("*.units.json"))
         stamp = lambda p: p.stat().st_mtime_ns if p.exists() else 0
-        return (setup.classifier, setup.view, bool(setup.fresh), float(cfg.title_weight or 0.0), tuple(stamp(p) for p in files),
+        return (bool(setup.fresh), float(cfg.title_weight or 0.0), tuple(stamp(p) for p in files),
                 len(units), max([stamp(p) for p in units] or [0]))
 
     def _load(self, setup: core.Setup) -> dict:
         """글과 분류기 점수. 정답·분류기·문서가 바뀌지 않았으면 모아 둔 것을 다시 쓴다(다시 학습했으면 새로 모은다)."""
         sig = self._signature(setup)
         if sig not in self._data:
-            self._data = {sig: core.load_data(self.env, self.scorer, setup.classifier, setup.view, self.log, bool(setup.fresh))}
+            self._data = {sig: core.load_data(self.env, self.scorer, self.log, bool(setup.fresh))}
         return self._data[sig]
 
     # ------------------------------------------------------------ 세어 보기, 돌리기
@@ -348,36 +315,22 @@ class App:
                 listed = ollama.models()
             except ollama.OllamaError:
                 pass
-            llms = core.llm_entries(setup.llms, listed, strict=False)
-            missing = sorted({m["name"] for m in llms if not m["digest"]})
-            todo = core.todo_counts(prep, llms, answers)
-            total = len(prep["chosen"]) * len(prep["plans"]) * len(llms)
-            est = self._estimate(prep, llms, answers, todo)
+            m = core.llm_entry(listed, strict=False)
+            todo = core.todo_count(prep, m, answers)
+            est = self._estimate(prep, m, answers, todo)
             self.status = ""
         return {"ok": True, "counts": prep["counts"], "threshold": prep["threshold"], "thr_note": prep["thr_note"],
-                "unit": prep["data"]["unit"], "part": prep["data"]["part"], "total": total, "todo": sum(todo.values()),
-                "missing": missing, "est": est}
+                "part": prep["data"]["part"], "total": len(prep["chosen"]), "todo": todo,
+                "missing": [] if m["digest"] else [m["name"]], "est": est}
 
-    def _estimate(self, prep: dict, llms: list, answers: core.Answers, todo: dict) -> str:
-        """받아 둔 답의 시간으로 남은 시간을 어림한다(같은 모델·같은 안의 답이 있을 때만)."""
-        seconds, known = 0.0, True
-        for m in llms:
-            for plan in prep["plans"]:
-                v = plan["variant"]
-                n = todo.get("%s|%s" % (m["id"], v.key), 0)
-                if not n:
-                    continue
-                secs = [r["sec"] for u in plan["users"] for r in [answers.get(core._key(m, plan, u))] if r]
-                if len(secs) < 3:
-                    known = False
-                    continue
-                seconds += n * sum(secs) / len(secs)
-        return core._left(seconds) + ("" if known else " + 아직 재 보지 않은 조합의 시간") if seconds else ""
+    def _estimate(self, prep: dict, m: dict, answers: core.Answers, todo: int) -> str:
+        """받아 둔 답의 시간으로 남은 시간을 어림한다(받아 둔 답이 세 개 이상일 때만)."""
+        plan = prep["plan"]
+        secs = [r["sec"] for u in plan["users"] for r in [answers.get(core._key(m, plan, u))] if r]
+        return core._left(todo * sum(secs) / len(secs)) if todo and len(secs) >= 3 else ""
 
     def start(self, body: dict) -> dict:
         setup = self._setup(body)
-        if not setup.llms:
-            raise ValueError("LLM을 하나 이상 골라 주세요.")
         with self.lock:
             if self.running:
                 raise ValueError("이미 돌리는 중입니다.")
@@ -419,6 +372,8 @@ class App:
             raise ValueError("모델 이름이 올바르지 않습니다")
         if ollama.is_cloud_name(name):
             raise ValueError("클라우드 모델은 받지 않습니다")
+        if name != core.FINAL["llm"]:
+            raise ValueError("5.0부터는 %s 만 씁니다" % core.FINAL["llm"])
         with self.lock:
             if self.running:
                 raise ValueError("지금 다른 일을 하는 중입니다. 끝난 뒤에 해 주세요.")
