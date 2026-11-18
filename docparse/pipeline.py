@@ -85,6 +85,30 @@ def _line_rows(b: Block, page) -> list:
         return []
 
 
+def _table_places(b: Block, info: dict, page) -> tuple:
+    """표를 풀어 쓴 줄마다, 원본에서 그 줄(행)이 놓인 자리. 반환: (PDF의 글줄 자리 목록, PPTX의 칸 목록). 모르면 빈 목록.
+
+    글 내용은 건드리지 않는다. 표시하기(marking)가 표 전체가 아니라 그 행에만 표시하려고 쓴다.
+    """
+    cells, flat = info["cells"], info["flat"]
+    per_line = tables.line_cells(cells, flat)
+    if not per_line:
+        return [], []
+    raw, cell_lines = info.get("raw"), getattr(b, "cell_lines", None)
+    if raw is not None and cell_lines is not None:              # PDF: 칸 안의 글줄 하나하나의 자리
+        boxes = []
+        for picked in per_line:
+            row = []
+            for i in picked:
+                ri, ci = raw[i]
+                row.extend(_span_box([l], page) for l in cell_lines[ri][ci] if not l.removed)
+            boxes.append(row)
+        return boxes, []
+    if getattr(b, "cell_spans", None) is not None:              # PPTX: 파일의 표에서 몇 번째 행, 몇 번째 칸인지
+        return [], [[(cells[i][0], cells[i][1]) for i in picked] for picked in per_line]
+    return [], []
+
+
 def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                 extra_keywords=None, order_log: Optional[list] = None,
                 min_chars: int = MIN_CHARS, need_korean: bool = True) -> List[PageOut]:
@@ -174,6 +198,11 @@ def apply_rules(doc: Document, repeat_ratio: float = 0.6,
                     ob.flat_lines = list(flat.lines)
                     ob.table = {"rows": info["rows"], "cols": info["cols"], "cells": info["cells"],
                                 "head_rows": flat.head_rows, "label_cols": flat.label_cols}
+                    try:                           # 행마다의 자리(원본에 표시할 때만 쓴다). 실패해도 글은 그대로 낸다
+                        ob.flat_boxes, ob.flat_cells = _table_places(b, info, page)
+                        ob.shape_id = getattr(b, "shape_id", None)
+                    except Exception:
+                        ob.flat_boxes, ob.flat_cells = [], []
             out.blocks.append(ob)
         outs.append(out)
     return outs

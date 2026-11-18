@@ -5,6 +5,10 @@
     ③ LLM                  분류기가 '예'로 본 덩어리를 이 PC의 Ollama(qwen3:8b · 프롬프트 안 C 사업 분야 · 생각 모드 끔)에 물어 '아니오'를 덜어 낸다
     ④ 표시한 파일 만들기    분류기 출력으로 표시한 사본, LLM까지 거친 결과로 표시한 사본, 요약 화면
 
+5.1에서 달라진 것 (표시하기에서만. 평가인 verify.bat 은 그대로다)
+    표는 통째로 한 덩어리로 넣지 않고 행 하나씩 넣는다(같은 분류기, 같은 문턱, 같은 LLM). '예'로 본 행에만 표시한다.
+    표시하지 않는 규칙(mark_rules.txt): 제목에 정해 둔 말이 든 쪽, 정해 둔 단어가 든 문장. ②와 ③ 사이에 적용하고, 걸린 것은 LLM에 묻지 않는다.
+
 단계마다 걸린 시간을 재서 요약 화면과 시간 기록(out/mark/times.html, times.csv)에 남긴다.
 LLM의 답은 out/mark/cache/answers.jsonl 에 쌓아 두고, 모델·프롬프트·글이 모두 같으면 다시 묻지 않는다(도중에 멈춰도 이어서 받는다).
 자료는 이 PC 밖으로 나가지 않는다: Ollama에는 127.0.0.1로만 말을 걸고, 이름에 cloud가 붙은 모델은 거부한다(verifying/ollama.py).
@@ -23,6 +27,7 @@ from verifying import ollama, prompts
 from verifying.core import FINAL
 
 from . import core, times
+from . import rules as mrules
 from .page import write_page
 
 METHODS = [("annot", "형광펜 주석 (지울 수 있음)"), ("paint", "쪽에 직접 칠하기 (어느 프로그램에서나 보임)")]
@@ -36,6 +41,11 @@ def mark_dir(cfg) -> Path:
 
 def answers_file(cfg) -> Path:
     return mark_dir(cfg) / "cache" / "answers.jsonl"
+
+
+def score(scorer: core.Scorer, ex: core.Extracted, log: Callable[[str], None], fresh: bool = False) -> dict:
+    """최종 모델의 분류기로 점수를 매긴다. 표는 행마다도 매긴다(5.1)."""
+    return scorer.score(ex, FINAL["classifier"], VIEW, STAGE, log, fresh, rows=True)
 
 
 # ---------------------------------------------------------------- 분류기의 문턱
@@ -106,14 +116,14 @@ def _left(seconds: float) -> str:
 
 def ask(llm: Llm, ex: core.Extracted, ids: List[str], answers: vcore.Answers, log: Callable[[str], None], stop=None,
         fresh: bool = False, tick: Optional[Callable[[int, int], None]] = None) -> dict:
-    """ids(분류기가 '예'로 본 덩어리)를 차례로 LLM에 묻는다.
+    """ids(분류기가 '예'로 본 것: 글 덩어리의 id, 표라면 행의 id)를 차례로 LLM에 묻는다.
 
-    반환: {"rows": {덩어리 id: 답}, "users": {덩어리 id: 뒤쪽 글}, "sec": 이 단계에 걸린 초, "load": 모델을 불러온 초,
+    반환: {"rows": {id: 답}, "users": {id: 뒤쪽 글}, "sec": 이 단계에 걸린 초, "load": 모델을 불러온 초,
            "new": 이번에 물은 수, "reused": 보관해 둔 답을 쓴 수, "stopped": 멈췄는가, "error": 실패한 까닭}
     fresh: 보관해 둔 답을 쓰지 않고 모두 다시 묻는다(걸린 시간을 잴 때). 새로 받은 답은 보관함에 적는다.
     """
     m = llm.model
-    text = {b.id: b.text for b in ex.doc.blocks}
+    text = {u.id: u.text for u in core.units(ex)}
     rows: Dict[str, dict] = {}
     users: Dict[str, str] = {}
     out = {"rows": rows, "users": users, "sec": 0.0, "load": 0.0, "new": 0, "reused": 0, "stopped": False, "error": ""}
@@ -175,11 +185,15 @@ def _copy(ex: core.Extracted, marks: list, target: Path, method: str, author: st
         if ex.kind == "pdf":
             from .pdf_mark import mark_pdf
             st = mark_pdf(ex.path, target, marks, method, author)
+            held = sum(int(mk.held or 0) for mk in marks)
         else:
             from .pptx_mark import mark_pptx
             st = mark_pptx(ex.path, target, marks, ex.slide_numbers)
-            notes.append("%s(PPTX): 글자에 형광펜 색을 넣은 덩어리 %d개, 표이거나 같은 글을 찾지 못해 덩어리 자리에 네모를 얹은 덩어리 %d개. "
-                         "형광펜 색은 PowerPoint 2019 이상(또는 365)에서 보입니다." % (word, st["text"], st["fallback"]))
+            held = st["held"]
+            notes.append("%s(PPTX): 글자에 형광펜 색을 넣은 것 %d개(그 가운데 표의 행 %d개), 원본에서 같은 글이나 행을 찾지 못해 덩어리 자리에 네모를 얹은 것 %d개. "
+                         "형광펜 색은 PowerPoint 2019 이상(또는 365)에서 보입니다." % (word, st["text"], st["rows"], st["fallback"]))
+        if held:
+            notes.append("%s: 표시하지 않기로 한 문장 %d개는 그 줄의 자리를 따로 알 수 없어, 덩어리에 넣은 표시에 함께 덮였습니다." % (word, held))
         if st.get("skipped"):
             notes.append("%s: 쪽을 찾지 못해 표시하지 못한 것 %d개" % (word, st["skipped"]))
         return target.name
@@ -188,29 +202,57 @@ def _copy(ex: core.Extracted, marks: list, target: Path, method: str, author: st
         return ""
 
 
+def _old_way(ex: core.Extracted, scores: dict, threshold: float, llm: Optional[Llm], answers: Optional[vcore.Answers]) -> Dict[str, dict]:
+    """표마다, 5.0처럼 표 전체를 한 덩어리로 넣었다면 어떻게 됐을지. 표 id → {"score": 표 전체의 분류기 점수, "yes": 문턱 이상인가,
+    "llm": 그때 LLM의 답(1 예 · 0 아니오 · None 읽지 못함 · "?" 받아 둔 답이 없음), "cut": LLM에 넣을 때 글이 잘렸을 것인가}
+
+    LLM에 새로 묻지 않는다. 5.0으로 같은 문서를 돌렸을 때 보관해 둔 답이 있으면 그것을 읽을 뿐이다.
+    """
+    out: Dict[str, dict] = {}
+    for b in (ex.doc.blocks if ex.doc else []):
+        if b.kind != "table":
+            continue
+        sc = scores["block"].get(b.id)
+        info = {"score": sc, "yes": sc is not None and sc >= threshold, "llm": "?", "cut": len(b.text.strip()) > prompts.TEXT_LIMIT}
+        if info["yes"] and llm is not None and answers is not None:
+            rec = answers.get(vcore.answer_key(llm.model["id"], llm.model["digest"], llm.system, prompts.user_prompt(b.text), prompts.MAX_TOKENS))
+            if rec is not None:
+                info["llm"] = rec["verdict"]
+        out[b.id] = info
+    return out
+
+
 def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], answers: Optional[vcore.Answers], threshold: float,
                  threshold_note: str, method: str, log: Callable[[str], None], stop=None, fresh: bool = False,
-                 scores: Optional[dict] = None, tick: Optional[Callable[[int, int], None]] = None) -> dict:
+                 scores: Optional[dict] = None, tick: Optional[Callable[[int, int], None]] = None, rules: Optional[mrules.Rules] = None) -> dict:
     """문서 하나를 최종 모델로 처리해 표시한 사본 두 개와 요약 화면을 만든다. llm이 None이면 분류기까지만 한다.
 
-    반환(화면과 시간 기록이 읽는 모양): {"name", "counts", "files": {"classifier", "llm", "page"}, "notes", "timing", "llm": {…}, "scores"}
+    판단하는 단위는 글 덩어리 하나, 표라면 행 하나다(5.1). rules: 표시하지 않는 규칙(None이면 규칙 없음).
+    반환(화면과 시간 기록이 읽는 모양): {"name", "counts", "files": {"classifier", "llm", "page"}, "notes", "timing", "llm": {…}, "skips", "tables"}
     """
     cfg = scorer.cfg
     threshold = core.safe_threshold(threshold)
     if method not in ("annot", "paint"):
         raise ValueError("표시 방식을 알 수 없습니다")
+    rules = rules if rules is not None else mrules.no_rules()
     out = mark_dir(cfg)
     out.mkdir(parents=True, exist_ok=True)
     notes: List[str] = []
 
-    # ② 분류기
-    if scores is None or (fresh and not scores.get("fresh")):
+    # ② 분류기 (표는 행마다)
+    if scores is None or "row" not in scores or (fresh and not scores.get("fresh")):
         log("%s · 분류기 점수를 매기는 중…" % ex.name)
-        scores = scorer.score(ex, FINAL["classifier"], VIEW, STAGE, log, fresh)
-    marks_c = core.pick_marks(ex, scores, VIEW, threshold)
+        scores = score(scorer, ex, log, fresh)
+    all_units = core.units(ex)
+    total = len(all_units)
+    scored_yes = 0
+    for u in all_units:
+        v = core.unit_score(scores, u)
+        scored_yes += 1 if (v is not None and v >= threshold) else 0
+    # 표시하지 않는 규칙: 걸린 것은 표시하지도, LLM에 묻지도 않는다
+    marks_c, skips = core.pick_final(ex, scores, threshold, rules)
     for mk in marks_c:
         mk.note = "검토 필요 · 분류기 점수 %.2f" % mk.score
-    total = len(scores["block"])
 
     # ③ LLM
     got = None
@@ -219,7 +261,8 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
     if llm is None:
         info["why"] = "LLM 단계를 돌리지 않았습니다(분류기까지만 만들기를 고름)."
     elif not marks_c:
-        info.update(ran=True, done=True, label=llm.label, why="분류기가 '예'로 본 덩어리가 없어 LLM에 물을 것이 없습니다.")
+        info.update(ran=True, done=True, label=llm.label, why="분류기가 '예'로 본 것%s이 없어 LLM에 물을 것이 없습니다." % (
+            " 가운데 규칙에 걸리지 않은 것" if skips else ""))
         marks_l = []
     else:
         got = ask(llm, ex, [mk.id for mk in marks_c], answers, log, stop, fresh, tick)
@@ -243,7 +286,10 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
     files = {"classifier": "", "llm": "", "page": "%s.%s.html" % (ex.path.stem, ex.kind)}
     t_c = t_l = 0.0
     if not marks_c:
-        notes.append("분류기의 문턱(%.2f) 이상인 덩어리가 없어 표시한 사본은 만들지 않았습니다. 문턱을 낮춰 보세요." % threshold)
+        if skips:
+            notes.append("분류기의 문턱(%.2f) 이상인 것이 모두 '표시하지 않는 규칙'에 걸려, 표시한 사본은 만들지 않았습니다." % threshold)
+        else:
+            notes.append("분류기의 문턱(%.2f) 이상인 덩어리가 없어 표시한 사본은 만들지 않았습니다. 문턱을 낮춰 보세요." % threshold)
     else:
         log("%s · 표시한 파일을 만드는 중…" % ex.name)
         t0 = time.perf_counter()
@@ -251,7 +297,7 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
         t_c = time.perf_counter() - t0
         loose = sum(1 for mk in marks_c if not mk.exact)
         if loose and ex.kind == "pdf":
-            notes.append("자리를 정확히 알 수 없는 %d개는 그 글이 든 덩어리 전체에 표시했습니다." % loose)
+            notes.append("자리를 정확히 알 수 없는 표의 행 %d개는 그 행이 든 표 전체에 표시했습니다." % loose)
     llm_target = out / ("%s.%s" % (core.out_stem(ex, "LLM"), ex.kind))
     if marks_l:
         t0 = time.perf_counter()
@@ -268,7 +314,7 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
     asks = _stats([float(r["sec"]) for r in rows.values()])
     verdicts = [r["verdict"] for r in rows.values()]
     timing = {
-        "extract": {"sec": float(ex.seconds), "pages": len(ex.pages), "blocks": total},
+        "extract": {"sec": float(ex.seconds), "pages": len(ex.pages), "blocks": total},        # blocks: 판단 단위의 수(표는 행마다 하나)
         "classify": {"sec": float(scores.get("wall") or 0.0), "compute": float(scores.get("seconds") or 0.0), "items": int(scores.get("items") or 0),
                      "new": int(scores.get("new_items") or 0),
                      "reused": max(0, int(scores.get("uniq") or 0) - int(scores.get("new_items") or 0)), "fresh": bool(scores.get("fresh"))},
@@ -281,12 +327,22 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
                 "ran": info["ran"], "done": info["done"]},
         "write": {"sec": t_c + t_l, "classifier": t_c, "llm": t_l},
     }
-    counts = {"pages": len(ex.pages), "blocks": total, "passed": len(marks_c),
+    n_rows = sum(1 for u in all_units if u.row)
+    whole = [k for k in skips if k.whole]
+    # blocks: 판단 단위 전체(글 덩어리 + 표의 행) · scored_yes: 분류기 점수가 문턱 이상 · passed: 거기서 규칙에 걸린 것을 뺀 것(= LLM에 물은 것)
+    counts = {"pages": len(ex.pages), "blocks": total, "text_blocks": total - n_rows, "rows": n_rows,
+              "tables": sum(1 for b in (ex.doc.blocks if ex.doc else []) if b.kind == "table"),
+              "scored_yes": scored_yes, "ruled": len(whole), "ruled_title": sum(1 for k in whole if k.kind == "title"),
+              "ruled_line": sum(1 for k in whole if k.kind == "line"), "ruled_part": sum(1 for k in skips if not k.whole),
+              "passed": len(marks_c), "passed_rows": sum(1 for mk in marks_c if mk.table),
               "llm_yes": sum(1 for v in verdicts if v == 1), "llm_no": sum(1 for v in verdicts if v == 0),
-              "llm_unknown": sum(1 for v in verdicts if v is None), "kept": None if marks_l is None else len(marks_l)}
+              "llm_unknown": sum(1 for v in verdicts if v is None), "kept": None if marks_l is None else len(marks_l),
+              "kept_rows": None if marks_l is None else sum(1 for mk in marks_l if mk.table)}
     res = {"name": ex.name, "kind": ex.kind, "made": time.strftime("%Y-%m-%d %H:%M:%S"), "threshold": threshold, "threshold_note": threshold_note,
            "method": method, "counts": counts, "files": files, "notes": notes, "timing": timing, "llm": info,
-           "classifier": scores.get("classifier"), "title_weight": float(cfg.title_weight or 0.0), "fresh": bool(fresh)}
+           "classifier": scores.get("classifier"), "title_weight": float(cfg.title_weight or 0.0), "fresh": bool(fresh),
+           "rules": {"title_words": list(rules.title_words), "line_words": list(rules.line_words), "file": rules.file.name if rules.file else ""},
+           "skips": [dataclasses.asdict(k) for k in skips], "tables": _old_way(ex, scores, threshold, llm, answers)}
     t0 = time.perf_counter()
     write_page(ex, scores, res, marks_c, marks_l, llm, out / files["page"])
     timing["write"]["page"] = time.perf_counter() - t0
@@ -298,7 +354,7 @@ def run_document(scorer: core.Scorer, ex: core.Extracted, llm: Optional[Llm], an
 
 
 def public(res: dict) -> dict:
-    """화면에 보낼 모양(LLM의 답 전체는 뺀다)."""
-    out = dict(res)
+    """화면에 보낼 모양(LLM의 답 전체와 규칙으로 뺀 글의 목록은 뺀다. 목록은 요약 화면에 있다)."""
+    out = {k: v for k, v in res.items() if k not in ("skips", "tables")}
     out["llm"] = {k: v for k, v in res["llm"].items() if k != "rows"}
     return out

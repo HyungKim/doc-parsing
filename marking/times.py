@@ -120,10 +120,19 @@ def detail_rows(res: dict) -> List[tuple]:
     """단계마다: (번호, 이름, 한 일, 초, 하나에 걸린 시간, 덧붙임)"""
     t, c = res["timing"], res["counts"]
     cl, lm, wr = t["classify"], t["llm"], t["write"]
-    rows = [(0, "글 뽑기", "%d쪽에서 덩어리 %d개" % (c["pages"], c["blocks"]), t["extract"]["sec"],
+    made = "%d쪽에서 판단할 글 %d개" % (c["pages"], c["blocks"])
+    if c.get("rows"):                              # 5.1: 표는 행 하나가 판단 단위
+        made += " (글 덩어리 %d개 + 표 %d개의 행 %d개)" % (c.get("text_blocks", 0), c.get("tables", 0), c["rows"])
+    rows = [(0, "글 뽑기", made, t["extract"]["sec"],
              "1쪽에 %s" % fmt(t["extract"]["sec"] / c["pages"]) if c["pages"] else "-", "파일을 올렸을 때 잰 값")]
-    rows.append((1, "분류기", "덩어리 %d개에 점수 → '예' %d개" % (c["blocks"], c["passed"]), cl["sec"],
-                 "덩어리 하나에 %s (모델을 불러오는 시간 빼고)" % fmt(cl["compute"] / cl["new"]) if cl["new"] else "-", classify_note(cl)))
+    did = "글 %d개에 점수 → 문턱 이상 %d개" % (c["blocks"], c.get("scored_yes", c["passed"]))
+    if c.get("ruled"):
+        did += " → 규칙으로 %d개를 빼고 %d개" % (c["ruled"], c["passed"])
+    note = classify_note(cl)
+    if c.get("tables"):
+        note += " · 표 전체의 점수 %d개도 함께 계산(5.0 방식과 견줘 보이려고)" % c["tables"]
+    rows.append((1, "분류기", did, cl["sec"],
+                 "글 하나에 %s (모델을 불러오는 시간 빼고)" % fmt(cl["compute"] / cl["new"]) if cl["new"] else "-", note))
     if not lm["ran"]:
         rows.append((2, "LLM", "돌리지 않음", 0.0, "-", ""))
     else:
@@ -138,9 +147,11 @@ def detail_rows(res: dict) -> List[tuple]:
             note.append("끝까지 받지 못함 (%d개 가운데 %d개)" % (lm["to_ask"], lm["asked"]))
         one = "-"
         if lm["mean"] is not None:
-            one = "덩어리 하나에 평균 %s (가운데 값 %s · 가장 빠른 것 %s · 가장 느린 것 %s)" % (
+            one = "글 하나에 평균 %s (가운데 값 %s · 가장 빠른 것 %s · 가장 느린 것 %s)" % (
                 fmt(lm["mean"]), fmt(lm["median"]), fmt(lm["min"]), fmt(lm["max"]))
-        did = "덩어리 %d개에 물음" % lm["asked"]
+        did = "글 %d개에 물음" % lm["asked"]
+        if c.get("passed_rows") and lm["done"]:
+            did += "(그 가운데 표의 행 %d개)" % c["passed_rows"]
         if lm["done"] and lm["asked"]:
             did += " → '예' %d · '아니오' %d%s" % (c["llm_yes"], c["llm_no"], " · 읽지 못한 답 %d" % c["llm_unknown"] if c["llm_unknown"] else "")
         rows.append((2, "LLM", did, lm["sec"], one, " · ".join(note)))
@@ -162,7 +173,7 @@ def table(res: dict) -> str:
     lm = t["llm"]
     if lm["ran"] and lm["asked"]:
         p.append("<p class=\"sub\">LLM이 답을 계산한 시간만 더하면 %s입니다(모델을 불러오는 시간과 보관해 둔 답을 쓴 것에 상관없이, 답마다 그 답을 받을 때 잰 시간의 합). "
-                 "덩어리 하나에 넣은 글은 평균 %.0f토큰, 받은 답은 평균 %.1f토큰입니다.</p>" % (fmt(lm["ask_sum"]), lm["tok_in"] or 0, lm["tok_out"] or 0))
+                 "한 번에 넣은 글은 평균 %.0f토큰, 받은 답은 평균 %.1f토큰입니다.</p>" % (fmt(lm["ask_sum"]), lm["tok_in"] or 0, lm["tok_out"] or 0))
     return "".join(p)
 
 
@@ -189,6 +200,7 @@ def add(cfg, res: dict, llm) -> None:
     """문서 하나의 실행을 기록에 더하고 화면과 표를 새로 쓴다."""
     t, c = res["timing"], res["counts"]
     rec = {"at": res["made"], "file": res["name"], "pages": c["pages"], "blocks": c["blocks"], "passed": c["passed"],
+           "rows": c.get("rows", 0), "scored_yes": c.get("scored_yes", c["passed"]), "ruled": c.get("ruled", 0), "ruled_part": c.get("ruled_part", 0),
            "kept": c["kept"], "llm_yes": c["llm_yes"], "llm_no": c["llm_no"], "llm_unknown": c["llm_unknown"],
            "threshold": round(float(res["threshold"]), 4), "llm": "" if llm is None else llm.label,
            "timing": {k: {a: (round(b, 3) if isinstance(b, float) else b) for a, b in t[k].items()} for k, _ in STAGES},
@@ -225,6 +237,10 @@ def _norm(r: dict) -> Optional[dict]:
 def _remark(r: dict) -> str:
     t = r["timing"]
     out = [r["old"]] if r.get("old") else []
+    if r.get("rows"):
+        out.append("표는 행마다 판단(행 %d개)" % r["rows"])
+    if r.get("ruled") or r.get("ruled_part"):
+        out.append("규칙으로 뺀 것 %d개%s" % (r.get("ruled") or 0, " · 줄만 뺀 것 %d줄" % r["ruled_part"] if r.get("ruled_part") else ""))
     if r.get("fresh"):
         out.append("처음부터 다시 계산")
     if t["classify"].get("reused"):
@@ -242,8 +258,10 @@ def _remark(r: dict) -> str:
 def write(cfg) -> None:
     recs = [r for r in (_norm(x) for x in load(cfg)) if r is not None]
     out = folder(cfg)
+    # 5.1부터: '덩어리'는 판단한 글의 수(글 덩어리 + 표의 행), '분류기 예'는 규칙에 걸린 것을 뺀 뒤의 수(= LLM에 물은 수). 맨 뒤 세 열은 5.1에서 더한 것
     head = ["때", "파일", "쪽", "덩어리", "분류기 예", "LLM 뒤에 남은 것", "LLM 예", "LLM 아니오", "LLM 읽지 못함", "분류기 문턱", "LLM",
-            "글 뽑기(초)", "분류기(초)", "LLM(초)", "LLM 모델 불러오기(초)", "LLM 덩어리 하나 평균(초)", "파일 만들기(초)", "합계(초)", "비고"]
+            "글 뽑기(초)", "분류기(초)", "LLM(초)", "LLM 모델 불러오기(초)", "LLM 덩어리 하나 평균(초)", "파일 만들기(초)", "합계(초)", "비고",
+            "표의 행", "분류기 문턱 이상", "규칙으로 뺀 것"]
     with open(out / "times.csv", "w", encoding="utf-8-sig", newline="") as f:       # 엑셀이 한글을 바로 읽도록 BOM을 붙인다
         w = csv.writer(f)
         w.writerow(head)
@@ -252,7 +270,8 @@ def write(cfg) -> None:
             w.writerow([r["at"], r["file"], r["pages"], r["blocks"], r["passed"], "" if r["kept"] is None else r["kept"],
                         r["llm_yes"], r["llm_no"], r["llm_unknown"], r["threshold"], r["llm"],
                         t["extract"]["sec"], t["classify"]["sec"], t["llm"]["sec"], t["llm"].get("load", 0),
-                        "" if t["llm"].get("mean") is None else t["llm"]["mean"], t["write"]["sec"], r["total"], _remark(r)])
+                        "" if t["llm"].get("mean") is None else t["llm"]["mean"], t["write"]["sec"], r["total"], _remark(r),
+                        r.get("rows", ""), r.get("scored_yes", ""), r.get("ruled", "")])
     page_css = """
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c2330;--mute:#5d6878;--line:#d9dee6;--acc:#1f5fbf}
 @media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2229;--ink:#e6eaf0;--mute:#9aa5b5;--line:#343c48;--acc:#7fb0ff}}
@@ -270,14 +289,16 @@ a{color:var(--acc)}
          "같은 내용이 <a href=\"times.csv\">times.csv</a>에 있습니다(엑셀에서 열 수 있고, 시간은 초 단위).</p>" % time.strftime("%Y-%m-%d %H:%M:%S"),
          "<div class=\"box\"><div class=\"tkey\">%s</div>"
          "<p class=\"sub\">막대는 한 번의 실행에서 단계마다 걸린 시간의 비율입니다. 비고에 '보관해 둔 계산·답 사용'이 적힌 실행은 그만큼 짧게 나온 것입니다. "
-         "처음부터 걸리는 시간을 보려면 표시하기 화면에서 '보관해 둔 계산을 쓰지 않고 처음부터 다시 계산'에 체크하고 만드세요.</p>" % "".join(
+         "처음부터 걸리는 시간을 보려면 표시하기 화면에서 '보관해 둔 계산을 쓰지 않고 처음부터 다시 계산'에 체크하고 만드세요. "
+         "5.1부터 '판단한 글'은 글 덩어리와 표의 행을 합한 수이고(표를 행마다 판단), '분류기 예'는 표시하지 않는 규칙에 걸린 것을 뺀 뒤의 수입니다. "
+         "그래서 5.0의 줄과 5.1의 줄은 같은 문서라도 수가 다릅니다.</p>" % "".join(
              "<span><i class=\"t%d\"></i>%s</span>" % (n, name) for n, (_, name) in enumerate(STAGES))]
     if not recs:
         p.append("<p>아직 기록이 없습니다.</p></div>")
     else:
-        p.append("<table class=\"tt\"><tr><th>때</th><th>파일</th><th class=\"n\">쪽</th><th class=\"n\">덩어리</th><th class=\"n\">분류기 '예'</th>"
+        p.append("<table class=\"tt\"><tr><th>때</th><th>파일</th><th class=\"n\">쪽</th><th class=\"n\">판단한 글</th><th class=\"n\">분류기 '예'</th>"
                  "<th class=\"n\">LLM 뒤에 남은 것</th><th>단계별 비율</th><th class=\"n\">글 뽑기</th><th class=\"n\">분류기</th><th class=\"n\">LLM</th>"
-                 "<th class=\"n\">파일 만들기</th><th class=\"n\">합계</th><th class=\"n\">LLM 덩어리 하나에</th><th>비고</th></tr>")
+                 "<th class=\"n\">파일 만들기</th><th class=\"n\">합계</th><th class=\"n\">LLM 글 하나에</th><th>비고</th></tr>")
         for r in reversed(recs):
             t = r["timing"]
             p.append("<tr><td class=\"k\">%s</td><td>%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td><td class=\"n\">%s</td><td>%s</td>"

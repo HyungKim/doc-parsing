@@ -21,6 +21,7 @@ from verifying import core as vcore
 from verifying import ollama, prompts
 
 from . import core, final, times
+from . import rules as mrules
 
 TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8",
          ".csv": "text/csv; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".pdf": "application/pdf",
@@ -98,13 +99,18 @@ code{font:13px ui-monospace,Consolas,monospace;background:var(--bg);border:1px s
 
 <div class="card"><h2>2. 최종 모델 <span class="sub" style="font-weight:400">(5.0에서 정한 조합. 바꿀 수 없고, 아래 세 가지만 고릅니다)</span></h2>
 <div class="flow" id="flow"></div>
-<div class="grp">분류기의 문턱 <span class="sub" style="font-weight:400">(분류기 점수가 이 값 이상인 덩어리를 '예'로 보고 LLM에 넘김)</span></div>
+<div class="grp">5.1에서 달라진 것</div>
+<ul class="sub" style="margin:0 0 10px;padding-left:20px">
+<li><b>표는 행 하나씩 판단합니다.</b> 표 전체가 아니라 '예'로 본 행에만 표시합니다. 분류기 · 문턱 · LLM은 글 덩어리와 같습니다. 행마다 LLM에 물으므로 표가 많은 문서는 묻는 수가 늘 수 있습니다.</li>
+<li id="rules">표시하지 않는 규칙을 읽는 중…</li>
+</ul>
+<div class="grp">분류기의 문턱 <span class="sub" style="font-weight:400">(분류기 점수가 이 값 이상인 글을 '예'로 보고 LLM에 넘김)</span></div>
 <div class="opt col" id="thrs"></div>
 <div class="row" style="margin:-4px 0 10px"><input type="range" id="thrbar" min="0" max="1" step="0.01" value="0.5"><span class="sub">지금 문턱 <b id="thrnow">0.50</b></span></div>
 <div class="grp">PDF에 표시하는 방식</div><div class="opt" id="methods"></div>
 <div class="grp">돌리는 방법</div>
 <div class="opt col">
-<label><input type="checkbox" id="usellm" checked><span>LLM 단계까지 돌리기<small>끄면 분류기 출력으로 표시한 사본만 만듭니다(LLM은 덩어리 하나에 몇 초에서 몇십 초가 걸립니다).</small></span></label>
+<label><input type="checkbox" id="usellm" checked><span>LLM 단계까지 돌리기<small>끄면 분류기 출력으로 표시한 사본만 만듭니다(LLM은 글 하나에 몇 초에서 몇십 초가 걸립니다).</small></span></label>
 <label><input type="checkbox" id="fresh"><span>보관해 둔 계산을 쓰지 않고 처음부터 다시 계산하기 <b>(걸린 시간을 재려면 체크)</b><small>한 번 계산한 글의 점수와 LLM의 답은 보관해 두고 다시 씁니다. 그래서 같은 문서를 두 번째로 돌리면 시간이 거의 0으로 나옵니다. 체크하면 보관해 둔 것을 쓰지 않고 모두 새로 계산해서, 처음 보는 문서에 걸리는 시간이 나옵니다.</small></span></label>
 </div>
 <p class="sub" id="titlew"></p></div>
@@ -174,8 +180,8 @@ function radio(name,value,cur,label,note,off){
 function thrNote(){const pct=Math.round((S.fin.threshold.target||0.9)*100);return S.sel.thrmode==="saved"?`지난 학습(${S.fin.threshold.made})에서 '예'의 ${pct}%를 찾던 문턱`:S.sel.thrmode==="half"?"0.5 (예와 아니오 가능성이 반반인 자리)":"직접 정한 문턱";}
 function render(){
   if(!S.files.length)$("files").innerHTML=`<p class="sub">아직 올린 파일이 없습니다.</p>`;
-  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">덩어리</th><th class="n">글 뽑는 데</th><th>상태</th><th></th></tr>`+S.files.map(f=>
-    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":f.blocks}</td><td class="n">${f.error?"-":fmt(f.seconds)}</td>`+
+  else $("files").innerHTML=`<table><tr><th>파일</th><th class="n">쪽</th><th class="n">판단할 글</th><th class="n">글 뽑는 데</th><th>상태</th><th></th></tr>`+S.files.map(f=>
+    `<tr><td>${esc(f.name)}</td><td class="n">${f.error?"-":f.pages}</td><td class="n">${f.error?"-":`${f.units} <span class="sub">(글 덩어리 ${f.units-f.rows}${f.rows?` + 표 ${f.tables}개의 행 ${f.rows}`:""})</span>`}</td><td class="n">${f.error?"-":fmt(f.seconds)}</td>`+
     `<td>${f.error?`<span class="bad">${esc(f.error)}</span>`:(f.blocks?"글을 뽑았습니다":"뽑힌 글이 없습니다")}</td><td><button data-rm="${esc(f.name)}">빼기</button></td></tr>`).join("")+`</table>`;
   const c=S.fin.classifier,l=S.fin.llm;
   let cs=!c.ready?`<span class="bad">모델 파일이 없습니다</span> (install_screen.bat 또는 download_screen.bat)`:
@@ -184,7 +190,7 @@ function render(){
     (!l.pulled?`<span class="bad">${esc(l.name)} 모델을 아직 받지 않았습니다</span> (verify.bat 화면의 '받기' 또는 <code>ollama pull ${esc(l.name)}</code>)`:
      (l.prompt_error?`<span class="bad">프롬프트 파일에 문제가 있습니다</span> ${esc(l.prompt_error)}`:`<span class="ok">준비됨</span> · Ollama ${esc(l.version)} · 이 PC 안(127.0.0.1)에서만 돕니다`));
   $("flow").innerHTML=`<div class="st"><b>① 글 뽑기</b><span>PDF·PPTX → 덩어리</span><span class="sub">1단계와 같은 규칙</span></div><div class="ar">→</div>`+
-    `<div class="st"><b>② 분류기</b><span>${esc(c.label)} · 덩어리</span><span class="sub">${cs}</span></div><div class="ar">→</div>`+
+    `<div class="st"><b>② 분류기</b><span>${esc(c.label)} · 덩어리 (표는 행)</span><span class="sub">${cs}</span></div><div class="ar">→</div>`+
     `<div class="st"><b>③ LLM</b><span>${esc(l.name)} · 프롬프트 안 ${esc(l.variant)}${l.variant_name?" "+esc(l.variant_name):""} · 생각 모드 ${l.think?"켬":"끔"}</span><span class="sub">${ls}</span></div><div class="ar">→</div>`+
     `<div class="st"><b>④ 표시한 파일</b><span>분류기 표시 사본 · LLM 표시 사본 · 요약 화면</span><span class="sub">out\\mark 폴더에 만듭니다</span></div>`;
   const sv=S.fin.threshold.saved,pct=Math.round((S.fin.threshold.target||0.9)*100);
@@ -194,6 +200,10 @@ function render(){
     `<label><input type="radio" name="thrmode" value="custom" ${S.sel.thrmode==="custom"?"checked":""}><span>직접 정하기 <input type="number" id="thrnum" min="0" max="1" step="0.01" value="${S.sel.thr.toFixed(2)}"></span></label>`;
   $("thrbar").value=S.sel.thr;$("thrnow").textContent=S.sel.thr.toFixed(2);
   $("methods").innerHTML=METHODS.map(x=>radio("method",x[0],S.sel.method,x[1],x[2])).join("");
+  const ru=S.fin.rules,q=a=>a.map(w=>`'${esc(w)}'`).join(" · ");
+  $("rules").innerHTML=ru.error?`<span class="bad">표시하지 않는 규칙을 읽지 못했습니다</span> ${esc(ru.error)}`:
+    `<b>표시하지 않는 규칙</b>: 쪽 제목에 든 말 ${ru.title_words.length?q(ru.title_words):"(없음)"} → 그 쪽 전체 · 문장에 든 단어 ${ru.line_words.length?q(ru.line_words):"(없음)"} → 그 문장(줄 하나, 표는 행 하나). `+
+    `걸린 것은 LLM에도 묻지 않습니다. 프로그램 폴더의 <code>${esc(ru.file)}</code> 파일을 메모장으로 고치면 다음에 만들 때 반영됩니다.`;
   $("titlew").textContent=S.fin.title_weight?`쪽 제목 반영: 켜짐 (비율 ${S.fin.title_weight}). 걸러내기 설정(screen_options.txt)을 그대로 따릅니다.`:"쪽 제목 반영: 꺼짐 (걸러내기 설정을 그대로 따릅니다)";
   drawPreview();
 }
@@ -201,16 +211,16 @@ function drawPreview(){
   const p=S.preview;
   if(!p){$("preview").innerHTML=S.files.length?`<p class="sub">'분류기 점수 미리 보기'를 누르면 지금 문턱에서 몇 개가 분류기의 '예'가 되는지(= LLM에 몇 개를 물어야 하는지) 보여 줍니다. 건너뛰고 바로 만들어도 됩니다.</p>`:"";return;}
   const thr=S.sel.thr;
-  let h=`<table><tr><th>파일</th><th class="n">분류기가 '예'로 볼 덩어리 (LLM에 물을 수)</th><th class="n">전체</th><th class="n">비율</th></tr>`,lists="";
+  let h=`<table><tr><th>파일</th><th class="n">분류기가 '예'로 볼 글 (LLM에 물을 수)</th><th class="n">그 가운데 표의 행</th><th class="n">규칙으로 뺄 것</th><th class="n">전체</th><th class="n">비율</th></tr>`,lists="";
   for(const f of p.files){
-    if(f.error){h+=`<tr><td>${esc(f.name)}</td><td colspan="3" class="bad">${esc(f.error)}</td></tr>`;continue;}
-    const all=f.items.filter(b=>b.score!=null),yes=all.filter(x=>x.score>=thr);
-    h+=`<tr><td>${esc(f.name)}</td><td class="n"><b class="yes">${yes.length}</b></td><td class="n">${all.length}</td><td class="n">${all.length?Math.round(100*yes.length/all.length):0}%</td></tr>`;
-    lists+=`<details><summary>${esc(f.name)}: 분류기가 '예'로 볼 덩어리 ${yes.length}개 보기</summary><ol class="items">`+
-      (yes.length?yes.slice(0,300).map(x=>`<li><span class="pg">${x.page}쪽</span><span class="sc">${x.score.toFixed(2)}</span><span class="tx">${esc(x.text)}</span></li>`).join(""):`<li class="sub">문턱 이상인 것이 없습니다.</li>`)+
+    if(f.error){h+=`<tr><td>${esc(f.name)}</td><td colspan="5" class="bad">${esc(f.error)}</td></tr>`;continue;}
+    const all=f.items.filter(b=>b.score!=null),over=all.filter(x=>x.score>=thr),yes=over.filter(x=>!x.skip),cut=over.filter(x=>x.skip);
+    h+=`<tr><td>${esc(f.name)}</td><td class="n"><b class="yes">${yes.length}</b></td><td class="n">${yes.filter(x=>x.row).length}</td><td class="n">${cut.length}</td><td class="n">${all.length}</td><td class="n">${all.length?Math.round(100*yes.length/all.length):0}%</td></tr>`;
+    lists+=`<details><summary>${esc(f.name)}: 분류기가 '예'로 볼 글 ${yes.length}개 보기</summary><ol class="items">`+
+      (yes.length?yes.slice(0,300).map(x=>`<li><span class="pg">${x.page}쪽${x.row?" · 표의 행":""}</span><span class="sc">${x.score.toFixed(2)}</span><span class="tx">${esc(x.text)}</span></li>`).join(""):`<li class="sub">문턱 이상인 것이 없습니다.</li>`)+
       (yes.length>300?`<li class="sub">… 나머지 ${yes.length-300}개는 요약 화면에서 볼 수 있습니다.</li>`:"")+`</ol></details>`;
   }
-  $("preview").innerHTML=h+`</table>`+lists+`<p class="sub">문턱을 움직이면 위 숫자가 바로 바뀝니다. 정했으면 '표시한 파일 만들기'를 누르세요.</p>`;
+  $("preview").innerHTML=h+`</table>`+lists+`<p class="sub">문턱을 움직이면 위 숫자가 바로 바뀝니다. '규칙으로 뺄 것'은 문턱 이상이지만 표시하지 않는 규칙에 통째로 걸린 수입니다. 정했으면 '표시한 파일 만들기'를 누르세요.</p>`;
 }
 function link(name){return `<a href="/out/mark/${encodeURIComponent(name)}" target="_blank">${esc(name)}</a>`;}
 function showResults(j){
@@ -219,13 +229,13 @@ function showResults(j){
     if(r.error){h+=`<div class="res"><b>${esc(r.name)}</b> <span class="bad">${esc(r.error)}</span></div>`;continue;}
     const c=r.counts,f=r.files;
     h+=`<div class="res"><h3>${esc(r.name)}</h3>`+
-      `<div class="cnt">덩어리 ${c.blocks}개 → 분류기 '예' <b class="yes">${c.passed}개</b>`+(c.kept!=null?` → LLM까지 거쳐 남은 것 <b class="yes">${c.kept}개</b> (LLM '예' ${c.llm_yes} · '아니오' ${c.llm_no}${c.llm_unknown?" · 읽지 못한 답 "+c.llm_unknown:""})`:"")+`</div>`+
+      `<div class="cnt">판단한 글 ${c.blocks}개 (글 덩어리 ${c.text_blocks}${c.rows?` + 표 ${c.tables}개의 행 ${c.rows}`:""}) → 분류기 문턱 이상 ${c.scored_yes}개`+(c.ruled?` → 규칙으로 ${c.ruled}개를 뺌`:"")+` → 분류기 '예' <b class="yes">${c.passed}개</b>`+(c.kept!=null?` → LLM까지 거쳐 남은 것 <b class="yes">${c.kept}개</b> (LLM '예' ${c.llm_yes} · '아니오' ${c.llm_no}${c.llm_unknown?" · 읽지 못한 답 "+c.llm_unknown:""})`:"")+`</div>`+
       (r.llm.why?`<div class="${r.llm.stopped||r.llm.error?"bad":"note"}">${esc(r.llm.why)}</div>`:"")+
       `<ul><li>① 분류기 출력으로 표시한 사본: ${f.classifier?link(f.classifier)+` <button class="small" data-open="${esc(f.classifier)}">기본 프로그램으로 열기</button>`:"만들지 않음"}</li>`+
       `<li>② LLM까지 거친 결과로 표시한 사본: ${f.llm?link(f.llm)+` <button class="small" data-open="${esc(f.llm)}">기본 프로그램으로 열기</button>`:"만들지 않음"}</li>`+
       `<li>요약 화면(두 결과를 나란히, 단계별 시간 표): <a href="/out/mark/${encodeURIComponent(f.page)}" target="_blank"><b>열기</b></a></li></ul>`+
       `<div class="grp" style="margin-top:6px">단계마다 걸린 시간</div>`+timeBar(r.timing)+
-      (r.timing.llm.mean!=null?`<div class="note">LLM: 덩어리 ${r.timing.llm.asked}개 · 하나에 평균 ${fmt(r.timing.llm.mean)}${r.timing.llm.reused?` · 보관해 둔 답 ${r.timing.llm.reused}개를 다시 써서 그만큼 짧게 나왔습니다`:""}</div>`:"")+
+      (r.timing.llm.mean!=null?`<div class="note">LLM: 글 ${r.timing.llm.asked}개 · 하나에 평균 ${fmt(r.timing.llm.mean)}${r.timing.llm.reused?` · 보관해 둔 답 ${r.timing.llm.reused}개를 다시 써서 그만큼 짧게 나왔습니다`:""}</div>`:"")+
       (r.timing.classify.reused?`<div class="note">분류기: 보관해 둔 계산 ${r.timing.classify.reused}개를 다시 써서 그만큼 짧게 나왔습니다</div>`:"")+
       (r.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join("")+`</div>`;
   }
@@ -297,9 +307,10 @@ load().catch(e=>say(e.message,true));
 
 
 class App:
-    def __init__(self, cfg, files: List[Path], prompts_file: Path):
+    def __init__(self, cfg, files: List[Path], prompts_file: Path, rules_file: Optional[Path] = None):
         self.cfg = cfg
         self.prompts_file = Path(prompts_file)
+        self.rules_file = Path(rules_file) if rules_file else None      # 표시하지 않는 규칙. 만들 때마다 새로 읽는다(메모장으로 고친 것이 바로 반영되게)
         self.scorer = core.Scorer(cfg)
         self.lock = threading.RLock()               # 무거운 일(글 뽑기, 점수 매기기, 만들기)은 한 번에 하나만
         self.docs: Dict[str, core.Extracted] = {}   # 파일 이름 → 뽑은 것
@@ -375,9 +386,18 @@ class App:
             llm["variant_name"] = v.name
         except ValueError as exc:
             llm["prompt_error"] = str(exc)
+        rules = {"title_words": [], "line_words": [], "file": self.rules_file.name if self.rules_file else "", "error": ""}
+        try:
+            r = self._rules()
+            rules.update(title_words=list(r.title_words), line_words=list(r.line_words))
+        except ValueError as exc:
+            rules["error"] = str(exc)
         return {"classifier": {"label": m["label"], "ready": bool(m.get("ready")), "trained": (m.get("trained") or {}).get(final.VIEW)},
-                "llm": llm, "title_weight": float(cfg.title_weight or 0.0),
+                "llm": llm, "title_weight": float(cfg.title_weight or 0.0), "rules": rules,
                 "threshold": {"saved": final.saved_threshold(cfg), "made": ch.get("thresholds_made", ""), "target": ch.get("target") or 0.9}}
+
+    def _rules(self) -> mrules.Rules:
+        return mrules.read_rules(self.rules_file) if self.rules_file else mrules.no_rules()
 
     def state(self) -> dict:
         files = []
@@ -385,7 +405,9 @@ class App:
             ex = self.docs.get(name)
             item = {"name": name, "error": self.errors.get(name, "")}
             if ex is not None:
-                item.update(ex.counts, kind=ex.kind, seconds=round(ex.seconds, 3))
+                us = core.units(ex)
+                item.update(ex.counts, kind=ex.kind, seconds=round(ex.seconds, 3), units=len(us), rows=sum(1 for u in us if u.row),
+                            tables=sum(1 for b in (ex.doc.blocks if ex.doc else []) if b.kind == "table"))
             files.append(item)
         return {"ok": True, "files": files, "final": self._final(), "run": {"running": self.running}}
 
@@ -399,7 +421,7 @@ class App:
     # ------------------------------------------------------------ 분류기 점수
     def _scores(self, ex: core.Extracted, fresh: bool = False) -> dict:
         if fresh or ex.name not in self.scores:
-            self.scores[ex.name] = self.scorer.score(ex, final.FINAL["classifier"], final.VIEW, final.STAGE, self.log, fresh)
+            self.scores[ex.name] = final.score(self.scorer, ex, self.log, fresh)      # 표는 행마다도 점수를 매긴다
         return self.scores[ex.name]
 
     def score(self, body: dict) -> dict:
@@ -407,6 +429,7 @@ class App:
         if self.running:
             raise ValueError("지금 만드는 중입니다. 끝난 뒤에 해 주세요.")
         out, new, seconds = [], 0, 0.0
+        rules = self._rules()
         with self.lock:
             for name in self.order:
                 ex = self.docs.get(name)
@@ -418,11 +441,14 @@ class App:
                 sc = self._scores(ex)
                 if not was:
                     new, seconds = new + sc["new_items"], seconds + sc["wall"]
-                items = [{"page": b.page, "text": b.text[:600], "score": None if sc["block"].get(b.id) is None else round(sc["block"][b.id], 4)}
-                         for b in (ex.doc.blocks if ex.doc else [])]
+                items = []
+                for u in core.units(ex):           # 판단 단위: 글 덩어리 하나, 표는 행 하나
+                    v = core.unit_score(sc, u)
+                    items.append({"page": u.page, "text": u.text[:600], "score": None if v is None else round(v, 4), "row": u.row,
+                                  "skip": core.whole_skip(ex, u, rules)})
                 out.append({"name": name, "items": items})
             self.status = ""
-        note = "새로 계산한 덩어리 %d개 · %s" % (new, times.fmt(seconds)) if new else "계산해 둔 결과를 다시 썼습니다."
+        note = "새로 계산한 글 %d개 · %s" % (new, times.fmt(seconds)) if new else "계산해 둔 결과를 다시 썼습니다."
         return {"ok": True, "files": out, "note": note}
 
     # ------------------------------------------------------------ 만들기
@@ -449,6 +475,7 @@ class App:
         try:
             with self.lock:
                 answers = None
+                rules = self._rules()
                 if opts["llm"]:
                     self.log("LLM을 준비하는 중…")
                     llm = final.prepare_llm(self.cfg, self.prompts_file, self.log)
@@ -469,11 +496,12 @@ class App:
                     try:
                         sc = self._scores(ex, opts["fresh"])
                         res = final.run_document(self.scorer, ex, llm, answers, opts["threshold"], opts["note"], opts["method"], self.log,
-                                                 self.stop, opts["fresh"], sc, tick)
+                                                 self.stop, opts["fresh"], sc, tick, rules)
                         results.append(final.public(res))
                         t = res["timing"]
-                        print("  %s: 덩어리 %d → 분류기 '예' %d%s · 글 뽑기 %s · 분류기 %s · LLM %s · 파일 만들기 %s · 합계 %s" % (
+                        print("  %s: 판단한 글 %d → 분류기 '예' %d%s%s · 글 뽑기 %s · 분류기 %s · LLM %s · 파일 만들기 %s · 합계 %s" % (
                             name, res["counts"]["blocks"], res["counts"]["passed"],
+                            " (규칙으로 뺀 것 %d)" % res["counts"]["ruled"] if res["counts"]["ruled"] else "",
                             "" if res["counts"]["kept"] is None else " → LLM까지 %d" % res["counts"]["kept"],
                             times.fmt(t["extract"]["sec"]), times.fmt(t["classify"]["sec"]), times.fmt(t["llm"]["sec"]) if t["llm"]["ran"] else "-",
                             times.fmt(t["write"]["sec"]), times.fmt(t["total"])), flush=True)
@@ -639,8 +667,8 @@ def make_handler(app: App):
     return Handler
 
 
-def serve(cfg, files: List[Path], prompts_file: Path, port: int = 8775, open_browser: bool = True) -> None:
-    app = App(cfg, files, prompts_file)
+def serve(cfg, files: List[Path], prompts_file: Path, port: int = 8775, open_browser: bool = True, rules_file: Optional[Path] = None) -> None:
+    app = App(cfg, files, prompts_file, rules_file)
     server = None
     for p in range(port, port + 20):               # 쓰고 있는 번호면 다음 번호로
         try:

@@ -94,6 +94,10 @@ class OutBlock:
     table: Optional[dict] = None             # {"rows", "cols", "cells": [(r, c, rowspan, colspan, text)]}
     # 적힌 줄마다, 그 줄을 이룬 원래 줄들의 자리(0~1). 원본에 표시할 때만 쓰고 결과 파일에는 적지 않는다. 모르면 빈 목록
     line_rows: List[list] = field(default_factory=list)
+    # 표일 때만, 풀어 쓴 줄(flat_lines)마다 그 줄이 나온 자리. 원본에서 그 행에만 표시할 때 쓰고 결과 파일에는 적지 않는다
+    flat_boxes: List[list] = field(default_factory=list)   # PDF: 그 행의 칸에 든 글줄들의 자리(0~1)
+    flat_cells: List[list] = field(default_factory=list)   # PPTX: 그 행의 칸들 (행, 열). 합친 칸은 시작 칸
+    shape_id: Optional[int] = None                         # PPTX: 이 표가 든 도형의 번호
 
 
 @dataclass

@@ -1,8 +1,9 @@
 """PPTX 사본에 표시를 넣는다. 이미 쓰고 있는 python-pptx만 쓴다.
 
-    글상자의 글  글자에 형광펜 색을 넣는다(줄이면 그 줄, 덩어리면 그 덩어리의 모든 줄). 슬라이드에서 같은 글을 찾아 넣는다.
-    표, 그리고 같은 글을 찾지 못한 것  그 덩어리의 자리에 반투명 노란 네모를 얹는다. PowerPoint에서 골라서 지울 수 있다.
-                 (표 안의 줄 하나만 '예'여도 표 전체에 네모가 얹힌다. PPTX에서는 줄이 놓인 자리를 알 수 없다.)
+    글상자의 글  글자에 형광펜 색을 넣는다(줄이면 그 줄, 덩어리면 그 덩어리의 줄들). 슬라이드에서 같은 글을 찾아 넣는다.
+    표의 행      (5.1) 그 행의 칸에 든 글자에 형광펜 색을 넣는다. 표 전체에 네모를 얹지 않는다.
+                 어느 표의 몇 번째 행·칸인지는 글을 뽑을 때 적어 둔 것(도형 번호와 행·열)으로 찾는다.
+    찾지 못한 것  그 덩어리의 자리에 반투명 노란 네모를 얹는다. PowerPoint에서 골라서 지울 수 있다.
 """
 from __future__ import annotations
 
@@ -89,6 +90,37 @@ def _highlight_text(paras: list, text: str) -> bool:
     return False
 
 
+def _highlight_cells(slide, shape_id: int, cells: list) -> bool:
+    """도형 번호가 shape_id인 표에서 cells[(행, 열), …]의 글자에 형광펜 색을 넣는다. 하나라도 넣었으면 True"""
+    from pptx.oxml.ns import qn
+    for frame in slide._element.iter(qn("p:graphicFrame")):
+        nv = frame.find(qn("p:nvGraphicFramePr"))
+        pr = nv.find(qn("p:cNvPr")) if nv is not None else None
+        if pr is None or pr.get("id") != str(shape_id):
+            continue
+        tbl = next(frame.iter(qn("a:tbl")), None)
+        if tbl is None:
+            continue
+        trs = tbl.findall(qn("a:tr"))
+        hit = False
+        for r, c in cells:
+            if not 0 <= r < len(trs):
+                continue
+            tcs = trs[r].findall(qn("a:tc"))
+            if not 0 <= c < len(tcs):
+                continue
+            for p in tcs[c].iter(qn("a:p")):
+                for child in p:
+                    if child.tag not in (qn("a:r"), qn("a:fld")):
+                        continue
+                    t = child.find(qn("a:t"))
+                    if t is not None and (t.text or "").strip():
+                        _set_highlight(child)
+                        hit = True
+        return hit
+    return False
+
+
 def _add_box(slide, box, width: int, height: int, score: float) -> None:
     from lxml import etree
     from pptx.dml.color import RGBColor
@@ -117,7 +149,8 @@ def _add_box(slide, box, width: int, height: int, score: float) -> None:
 def mark_pptx(src: Path, dst: Path, marks: list, slide_numbers: List[int]) -> dict:
     """marks: core.Mark 목록. slide_numbers: 쪽 번호(1부터) → 파일 안의 실제 슬라이드 번호(숨긴 슬라이드는 뽑을 때 빠진다).
 
-    반환: {"marks": 표시한 수, "text": 글자에 형광펜을 넣은 것의 수, "boxes": 얹은 네모 수, "fallback": 네모로 대신한 것의 수, "skipped": 넘긴 수}
+    반환: {"marks": 표시한 수, "text": 글자에 형광펜을 넣은 것의 수, "rows": 그 가운데 표의 행, "boxes": 얹은 네모 수,
+           "fallback": 네모로 대신한 것의 수, "held": 표시하지 않기로 한 줄인데 네모에 함께 덮인 줄 수, "skipped": 넘긴 수}
     """
     from pptx import Presentation
 
@@ -127,7 +160,7 @@ def mark_pptx(src: Path, dst: Path, marks: list, slide_numbers: List[int]) -> di
     by_page: Dict[int, list] = {}
     for m in marks:
         by_page.setdefault(int(m.page), []).append(m)
-    stats = {"marks": 0, "text": 0, "boxes": 0, "fallback": 0, "skipped": 0}
+    stats = {"marks": 0, "text": 0, "rows": 0, "boxes": 0, "fallback": 0, "held": 0, "skipped": 0}
     for number in sorted(by_page):
         index = (slide_numbers[number - 1] if 1 <= number <= len(slide_numbers) else number) - 1
         if not 0 <= index < len(slides):
@@ -139,15 +172,24 @@ def mark_pptx(src: Path, dst: Path, marks: list, slide_numbers: List[int]) -> di
         for m in by_page[number]:
             if paras is None:
                 paras = _paragraphs(slide)
-            if not m.table:
+            cells = getattr(m, "cells", None)
+            if m.table and cells:                   # 표의 행: 그 행의 칸에 든 글자에만
+                if _highlight_cells(slide, cells[0], cells[1]):
+                    stats["text"] += 1
+                    stats["rows"] += 1
+                    stats["marks"] += 1
+                    continue
+            elif not m.table:
                 # 글상자 안의 글은 글자에 형광펜 색을 넣는다(글상자의 크기는 어림한 값이라 네모를 얹으면 글과 어긋날 수 있다)
-                texts = [m.text] if m.unit == "line" else [t for t in m.text.split("\n") if t.strip()]
+                picked = getattr(m, "texts", None)  # 표시하지 않는 규칙에 걸린 줄을 뺀 나머지. None이면 모든 줄
+                texts = [m.text] if m.unit == "line" else (list(picked) if picked is not None else [t for t in m.text.split("\n") if t.strip()])
                 found = [_highlight_text(paras, t) for t in texts]
                 if found and all(found):
                     stats["text"] += 1
                     stats["marks"] += 1
                     continue
             stats["fallback"] += 1
+            stats["held"] += int(getattr(m, "held", 0) or 0)
             if m.block_id not in boxed:             # 같은 덩어리에는 네모를 하나만
                 boxed.add(m.block_id)
                 _add_box(slide, m.box, width, height, m.score)

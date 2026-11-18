@@ -316,6 +316,8 @@ class _SlideReader:
         block: Optional[Block] = None
         if getattr(shape, "has_table", False) and shape.has_table:
             block = self.table_block(shape)
+            if block is not None:
+                block.shape_id = getattr(shape, "shape_id", None)   # type: ignore[attr-defined]  원본의 그 표에 표시할 때 찾는 번호
         elif getattr(shape, "has_chart", False) and shape.has_chart:
             block = self.chart_block(shape)
         elif shape._element.tag == qn("p:graphicFrame"):

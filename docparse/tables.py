@@ -32,6 +32,7 @@ class Flat:
     label_cols: int = 0                         # 행 머리글이 차지한 열 수
     rows: List[Tuple[tuple, list]] = field(default_factory=list)     # [(행 경로, [(열 경로, 값)])]
     lines: List[str] = field(default_factory=list)
+    src_rows: List[int] = field(default_factory=list)                # 줄마다, 그 줄이 나온 표의 행(맨 위가 0). 원본에 표시할 자리를 찾는 데만 쓴다
 
     @property
     def text(self) -> str:
@@ -53,28 +54,35 @@ def _cluster(values: List[float]) -> List[float]:
     return [sum(g) / len(g) for g in groups]
 
 
-def cells_from_boxes(boxes: list, texts: list) -> Tuple[int, int, List[Cell]]:
+def cells_from_boxes(boxes: list, texts: list, raw: Optional[list] = None) -> Tuple[int, int, List[Cell]]:
     """PDF: 칸 상자들의 가장자리로 격자를 되살리고, 상자가 걸친 범위로 합친 칸을 알아낸다.
 
     boxes[r][c]는 (x0, y0, x1, y1) 또는 None, texts[r][c]는 그 칸의 글.
+    raw에 목록을 주면 돌려주는 칸마다 그 칸이 boxes의 어느 자리(r, c)에서 왔는지를 같은 순서로 담는다.
     """
-    found = [(b, texts[r][c] if r < len(texts) and c < len(texts[r]) else "")
+    found = [(b, texts[r][c] if r < len(texts) and c < len(texts[r]) else "", (r, c))
              for r, row in enumerate(boxes) for c, b in enumerate(row) if b]
     if not found:
         return 0, 0, []
-    xs = _cluster([b[0] for b, _ in found] + [b[2] for b, _ in found])
-    ys = _cluster([b[1] for b, _ in found] + [b[3] for b, _ in found])
+    xs = _cluster([b[0] for b, _, _ in found] + [b[2] for b, _, _ in found])
+    ys = _cluster([b[1] for b, _, _ in found] + [b[3] for b, _, _ in found])
     near = lambda edges, v: min(range(len(edges)), key=lambda i: abs(edges[i] - v))
     cells: List[Cell] = []
-    for b, text in found:
+    for b, text, at in found:
         c0, c1, r0, r1 = near(xs, b[0]), near(xs, b[2]), near(ys, b[1]), near(ys, b[3])
         if c1 > c0 and r1 > r0:
             cells.append((r0, c0, r1 - r0, c1 - c0, text))
+            if raw is not None:
+                raw.append(at)
     return len(ys) - 1, len(xs) - 1, cells
 
 
-def _pipe(R: int, C: int, cells: List[Cell], reason: str, caption: Optional[List[str]] = None) -> Flat:
-    """칸 구분 모양. 빈 칸은 자리를 남기고, 합친 칸은 걸친 자리마다 같은 글을 적어 열을 맞춘다."""
+def _pipe(R: int, C: int, cells: List[Cell], reason: str, caption: Optional[List[str]] = None,
+          offset: int = 0, cap_rows: Optional[List[int]] = None) -> Flat:
+    """칸 구분 모양. 빈 칸은 자리를 남기고, 합친 칸은 걸친 자리마다 같은 글을 적어 열을 맞춘다.
+
+    offset: 표 제목 줄을 떼어 낸 수(cells의 행 번호에 이만큼 더하면 원래 표의 행). cap_rows: 제목 줄들의 원래 행.
+    """
     grid = [["" for _ in range(C)] for _ in range(R)]
     whole = {}
     for r, c, rs, cs, text in cells:
@@ -85,13 +93,16 @@ def _pipe(R: int, C: int, cells: List[Cell], reason: str, caption: Optional[List
             for cc in range(c, min(c + cs, C)):
                 grid[rr][cc] = text.strip()
     lines = ["[표] " + t for t in (caption or []) if t]
+    src = (list(cap_rows or []) + [-1] * len(lines))[:len(lines)]
     for r in range(R):
         if r in whole:
             if whole[r]:
                 lines.append(whole[r])
+                src.append(r + offset)
         elif any(grid[r]):
             lines.append(" | ".join(grid[r]))
-    return Flat("pipe", reason, caption=list(caption or []), lines=lines)
+            src.append(r + offset)
+    return Flat("pipe", reason, caption=list(caption or []), lines=lines, src_rows=src)
 
 
 def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
@@ -104,11 +115,12 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
     while ncap in full:
         ncap += 1
     caption = [full[r].strip() for r in range(ncap) if full[r].strip()]
+    cap_rows = [r for r in range(ncap) if full[r].strip()]
     section = {r - ncap: t.strip() for r, t in full.items() if r >= ncap}
     cells = [(r - ncap, c, rs, cs, t) for r, c, rs, cs, t in cells if r >= ncap]
     R -= ncap
     if R < 2:
-        return _pipe(R, C, cells, "제목 줄을 빼면 본문이 없음", caption)
+        return _pipe(R, C, cells, "제목 줄을 빼면 본문이 없음", caption, ncap, cap_rows)
     work = [x for x in cells if x[0] not in section]
     origin = {(r, c): (rs, cs) for r, c, rs, cs, _ in work}
 
@@ -139,7 +151,7 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
         lead = 0
     L = max(L, l, lead)
     if R - H < 1 or C - L < 1:
-        return _pipe(R, C, cells, "머리글을 빼면 값이 없음", caption)
+        return _pipe(R, C, cells, "머리글을 빼면 값이 없음", caption, ncap, cap_rows)
 
     grid = {}
     for idx, (r, c, rs, cs, text) in enumerate(cells):
@@ -162,16 +174,17 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
     col_paths = {c: path(grid.get((r, c)) for r in range(H)) for c in range(L, C)}
     missing = [c for c in col_paths if not col_paths[c]]
     if len(missing) * 2 > len(col_paths):
-        return _pipe(R, C, cells, "열 머리글이 비어 있음", caption)
+        return _pipe(R, C, cells, "열 머리글이 비어 있음", caption, ncap, cap_rows)
     for c in missing:
         col_paths[c] = ("%d번째 열" % (c + 1),)
     leaf = [col_paths[c][-1] for c in col_paths]
     if sum(1 for t in leaf if _numeric_like(t)) * 2 > len(leaf):
-        return _pipe(R, C, cells, "첫 줄이 숫자여서 머리글이 없는 표로 봄", caption)
+        return _pipe(R, C, cells, "첫 줄이 숫자여서 머리글이 없는 표로 봄", caption, ncap, cap_rows)
 
     # 4) 본문: 행 머리글의 빈 칸은 위 칸을 이어받는다(같은 상위 묶음 안에서만)
     res = Flat("keyvalue", caption=caption, head_rows=H, label_cols=L)
     res.lines.extend("[표] " + cap for cap in caption)
+    res.src_rows.extend(cap_rows)
     context: tuple = ()
     prev: list = [None] * L
     for r in range(H, R):
@@ -179,6 +192,7 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
             context, prev = ((section[r],) if section[r] else ()), [None] * L
             if section[r]:
                 res.lines.append(section[r])
+                res.src_rows.append(r + ncap)
             continue
         labels: list = []
         inherit, seen = True, None
@@ -210,7 +224,26 @@ def flatten(R: int, C: int, cells: List[Cell]) -> Flat:
         res.rows.append((rp, vals))
         values = ", ".join("%s: %s" % (" ".join(cp), v) for cp, v in vals)
         res.lines.append(" — ".join(x for x in (" > ".join(rp), values) if x))
+        res.src_rows.append(r + ncap)
     return res
+
+
+def line_cells(cells: List[Cell], flat: Flat) -> List[List[int]]:
+    """풀어 쓴 줄마다, 그 줄의 글이 나온 칸들(cells 목록에서의 번호). 원본에서 그 행에만 표시할 때 쓴다.
+
+    그 행에 걸친 칸 가운데 글이 있는 것을 고른다(그 줄의 글에 들어간 칸들이다).
+    풀어 쓴 표에서는 여러 행에 걸쳐 합친 행 머리글(위아래 행이 함께 쓰는 이름)은 뺀다. 한 행을 표시할 때 이웃 행의 이름까지
+    칠해지지 않게 하려는 것이다. 그렇게 해서 남는 칸이 없으면 걸친 칸을 모두 쓴다. 칸 구분으로 둔 표는 어느 열이 머리글인지 모르므로 빼지 않는다.
+    줄 수와 행 정보가 맞지 않으면(있어서는 안 되는 일) 빈 목록을 돌려준다.
+    """
+    if len(flat.src_rows) != len(flat.lines):
+        return []
+    out: List[List[int]] = []
+    for g in flat.src_rows:
+        cover = [i for i, (r, c, rs, cs, text) in enumerate(cells) if r <= g < r + rs and text.strip()] if g >= 0 else []
+        own = [i for i in cover if cells[i][2] == 1 or cells[i][1] >= flat.label_cols] if flat.mode == "keyvalue" else cover
+        out.append(own or cover)
+    return out
 
 
 def describe(block) -> Optional[dict]:
@@ -221,12 +254,14 @@ def describe(block) -> Optional[dict]:
     R, C = len(rows), max(len(r) for r in rows)
     spans = getattr(block, "cell_spans", None)                    # PPTX: 파일에 적힌 병합 정보
     boxes = getattr(block, "cell_boxes", None)                    # PDF: 칸 상자
+    raw = None                                                    # PDF에서만: 칸마다 원래 칸 상자의 자리 (행, 열)
     if spans is not None:
         cells = [(r, c, rs, cs, rows[r][c]) for r, c, rs, cs in spans if r < R and c < len(rows[r])]
     elif boxes is not None:
-        R, C, cells = cells_from_boxes(boxes, rows)
+        raw = []
+        R, C, cells = cells_from_boxes(boxes, rows, raw)
     else:
         cells = [(r, c, 1, 1, rows[r][c]) for r in range(R) for c in range(len(rows[r]))]
     if not cells or R < 1 or C < 1:
         return None
-    return {"rows": R, "cols": C, "cells": cells, "flat": flatten(R, C, cells)}
+    return {"rows": R, "cols": C, "cells": cells, "flat": flatten(R, C, cells), "raw": raw}
